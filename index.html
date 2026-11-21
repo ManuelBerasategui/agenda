@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="theme-color" content="#0D6A5A">
+<link rel="manifest" href="manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Agenda diaria</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap">
+<style>
+:root {
+  --bg: #F2F5F3; --surface: #FFFFFF; --ink: #15201C; --muted: #5A6A64; --line: #D9E1DD;
+  --accent: #0D6A5A; --accent-ink: #FFFFFF; --now: #E9F4F0; --warn: #B13A3A;
+  --c-estudio: #2D5BCB; --c-lectura: #5B6FC0; --c-negocio: #B3560A; --c-fijo: #6A5AA6;
+  --c-finanzas: #2A7A3C; --c-descanso: #4C7889; --c-cuerpo: #B13A3A;
+  --font-body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0F1613; --surface: #17211D; --ink: #E7EFEB; --muted: #9DB0A8; --line: #263630;
+    --accent: #3FC1A8; --accent-ink: #08201A; --now: #1B2D27; --warn: #F09A9A;
+    --c-estudio: #8DAAF2; --c-lectura: #A9B6F0; --c-negocio: #F0A468; --c-fijo: #B7A9EE;
+    --c-finanzas: #7FD08F; --c-descanso: #8FC0D1; --c-cuerpo: #F09A9A;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: 16px; line-height: 1.4;
+  padding-top: calc(env(safe-area-inset-top, 0px) + 18px);
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 150px);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+[hidden] { display: none !important; }
+main { max-width: 680px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+button { font: inherit; color: inherit; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0; }
+h1 { font-size: 30px; line-height: 1.1; margin: 0; font-weight: 800; text-wrap: balance; }
+h2 { font-family: var(--font-mono); font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 4px 0 0; }
+
+/* Cabecera y navegación de días */
+.top { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; }
+.top-text { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.nav { display: flex; gap: 6px; flex-shrink: 0; }
+.nav button {
+  min-width: 44px; height: 44px; padding: 0 12px; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--surface); cursor: pointer; font-weight: 600; font-size: 15px;
+}
+.nav button:focus-visible, .chip:focus-visible, .send:focus-visible, .mic:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+/* Totales */
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.stat .k { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.stat .v { font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.15; }
+.stat .s { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.stat.total { border-color: var(--accent); }
+.goal { display: flex; flex-direction: column; gap: 6px; }
+.bar { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; position: relative; }
+.bar > span { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 99px; transition: width .3s ease; }
+.bar .plan { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+.bar .real { background: var(--accent); }
+.goal-text { font-size: 13px; color: var(--muted); margin: 0; }
+.goal-text strong { color: var(--ink); }
+
+/* Fechas y aviso */
+.dates { display: flex; flex-wrap: wrap; gap: 6px; }
+.date-chip { font-size: 13px; padding: 5px 10px; border-radius: 99px; background: var(--surface); border: 1px solid var(--line); }
+.date-chip b { font-variant-numeric: tabular-nums; }
+.date-chip.soon { border-color: var(--warn); color: var(--warn); font-weight: 600; }
+.aviso { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; align-items: center; background: color-mix(in srgb, var(--warn) 12%, var(--surface)); border: 2px solid var(--warn); border-radius: 14px; padding: 14px 16px; }
+.aviso-icon { font-size: 30px; line-height: 1; }
+.aviso p { margin: 0; overflow-wrap: anywhere; }
+.aviso-title { font-weight: 700; font-size: 17px; }
+.aviso-note { font-size: 15px; }
+
+/* Ahora */
+.ahora { background: var(--accent); color: var(--accent-ink); border-radius: 16px; padding: 16px 18px; display: flex; flex-direction: column; gap: 4px; }
+.ahora .lbl { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; opacity: .85; }
+.ahora .what { font-size: 20px; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
+.ahora .when { font-size: 14px; opacity: .9; font-variant-numeric: tabular-nums; }
+
+/* Bloques */
+section { display: flex; flex-direction: column; gap: 8px; }
+ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.row {
+  position: relative; display: grid; grid-template-columns: 54px minmax(0, 1fr) 28px; gap: 12px; align-items: start;
+  background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--c); border-radius: 12px;
+  padding: 12px 14px 12px 12px; cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.row.now { background: var(--now); border-color: var(--accent); border-left-color: var(--c); box-shadow: 0 0 0 1px var(--accent); }
+.row.past:not(.done) { opacity: .75; }
+.time { font-family: var(--font-mono); font-size: 13px; line-height: 1.35; font-variant-numeric: tabular-nums; }
+.time span { display: block; color: var(--muted); }
+.body { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pill { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 2px 8px; border-radius: 99px; color: var(--c); background: color-mix(in srgb, var(--c) 14%, var(--surface)); }
+.dur { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+.flag { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--accent-ink); background: var(--accent); padding: 2px 8px; border-radius: 99px; }
+.title { font-weight: 600; font-size: 16px; margin: 0; overflow-wrap: anywhere; }
+.note { font-size: 14px; color: var(--muted); margin: 0; overflow-wrap: anywhere; }
+.row input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.box { width: 26px; height: 26px; border: 2px solid var(--muted); border-radius: 8px; position: relative; margin-top: 1px; }
+.row input:checked ~ .box { background: var(--accent); border-color: var(--accent); }
+.row input:checked ~ .box::after { content: ""; position: absolute; left: 7px; top: 2px; width: 6px; height: 12px; border: solid var(--accent-ink); border-width: 0 3px 3px 0; transform: rotate(45deg); }
+.row input:focus-visible ~ .box { outline: 3px solid var(--accent); outline-offset: 2px; }
+.row.done .title { text-decoration: line-through; text-decoration-thickness: 1.5px; }
+.row.done .title, .row.done .note, .row.done .time { opacity: .55; }
+
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+.card p { margin: 0; }
+.empty { border-style: dashed; }
+.empty-title { font-weight: 600; font-size: 17px; }
+.muted { color: var(--muted); font-size: 15px; }
+.pend li { display: flex; gap: 10px; align-items: flex-start; font-size: 15px; }
+.pend li .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c-negocio); margin-top: 7px; flex-shrink: 0; }
+.pend li span:last-child { overflow-wrap: anywhere; }
+
+/* Agente */
+.chat { display: flex; flex-direction: column; gap: 8px; }
+.msg { padding: 10px 14px; border-radius: 14px; font-size: 15px; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 92%; }
+.msg.yo { align-self: flex-end; background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 4px; }
+.msg.ag { align-self: flex-start; background: var(--surface); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.msg.err { border-color: var(--warn); color: var(--warn); }
+.msg .at { display: block; font-size: 11px; opacity: .7; margin-top: 4px; font-family: var(--font-mono); }
+
+.composer {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+  background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  border-top: 1px solid var(--line);
+  padding: 10px max(12px, env(safe-area-inset-right, 0px)) calc(env(safe-area-inset-bottom, 0px) + 10px) max(12px, env(safe-area-inset-left, 0px));
+}
+.composer-in { max-width: 680px; margin: 0 auto; display: flex; flex-direction: column; gap: 6px; }
+.composer-row { display: flex; gap: 8px; align-items: flex-end; }
+.composer textarea {
+  flex: 1; min-width: 0; resize: none; font: inherit; font-size: 16px; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 11px 14px; min-height: 48px; max-height: 140px;
+}
+.composer textarea:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+.mic, .send { width: 48px; height: 48px; border-radius: 50%; border: none; cursor: pointer; flex-shrink: 0; display: grid; place-items: center; }
+a { color: var(--accent); }
+.mic { background: var(--surface); border: 1px solid var(--line); color: var(--ink); }
+.mic.on { background: var(--warn); color: #fff; border-color: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+.send { background: var(--accent); color: var(--accent-ink); }
+.send:disabled { opacity: .45; cursor: default; }
+.hint { font-size: 12px; color: var(--muted); margin: 0; min-height: 1.2em; }
+.chips { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.chip { flex-shrink: 0; font-size: 13px; padding: 6px 11px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface); cursor: pointer; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--warn) 25%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .bar > span { transition: none; } .mic.on { animation: none; } }
+@media (max-width: 420px) { .stat .v { font-size: 20px; } h1 { font-size: 26px; } }
+</style>
+</head>
+<body>
+<main>
+  <header class="top">
+    <div class="top-text">
+      <p class="eyebrow" id="eyebrow">Tu día</p>
+      <h1 id="heading">Agenda diaria</h1>
+    </div>
+    <nav class="nav" aria-label="Cambiar de día">
+      <button id="prev" aria-label="Día anterior">‹</button>
+      <button id="today">Hoy</button>
+      <button id="next" aria-label="Día siguiente">›</button>
+      <button id="btn-ajustes" aria-label="Ajustes">⚙</button>
+    </nav>
+  </header>
+
+  <div class="stats" aria-live="polite">
+    <div class="stat"><span class="k">Estudio</span><span class="v" id="st-est">0 h</span><span class="s" id="st-est-s"></span></div>
+    <div class="stat"><span class="k">Trabajo</span><span class="v" id="st-tra">0 h</span><span class="s" id="st-tra-s"></span></div>
+    <div class="stat total"><span class="k">Total</span><span class="v" id="st-tot">0 h</span><span class="s" id="st-tot-s">meta 7 h</span></div>
+  </div>
+  <div class="goal">
+    <div class="bar" aria-hidden="true"><span class="plan" id="bar-plan"></span><span class="real" id="bar-real"></span></div>
+    <p class="goal-text" id="goal-text"></p>
+  </div>
+
+  <div class="dates" id="dates"></div>
+
+  <div class="aviso" id="aviso" role="status" hidden>
+    <span class="aviso-icon" aria-hidden="true">⚠️</span>
+    <div><p class="aviso-title" id="aviso-title"></p><p class="aviso-note" id="aviso-note"></p></div>
+  </div>
+
+  <div class="ahora" id="ahora" hidden>
+    <span class="lbl" id="ahora-lbl">Ahora</span>
+    <span class="what" id="ahora-what"></span>
+    <span class="when" id="ahora-when"></span>
+  </div>
+
+  <section id="chat-sec" hidden>
+    <h2>Agente</h2>
+    <div class="chat" id="chat"></div>
+  </section>
+
+  <div id="agenda" style="display:flex;flex-direction:column;gap:20px">
+    <div class="card empty"><p class="empty-title">Cargando tu día…</p><p class="muted">Un segundo.</p></div>
+  </div>
+
+  <section id="pend-sec" hidden>
+    <h2>Pendientes</h2>
+    <div class="card"><ul class="pend" id="pend"></ul></div>
+  </section>
+
+  <section id="ajustes" hidden>
+    <h2>Ajustes</h2>
+    <div class="card">
+      <p><b>Clave de Gemini (gratis)</b></p>
+      <p class="muted">Entrá a <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> con tu cuenta de Google, tocá «Create API key», copiala y pegala acá. Queda guardada solo en este dispositivo.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="key" type="password" autocomplete="off" placeholder="Pegá tu clave acá" style="flex:1;min-width:200px;font:inherit;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--ink)">
+        <button type="button" class="chip" id="guardar-key" style="padding:10px 16px">Guardar y probar</button>
+      </div>
+      <p class="muted" id="key-estado"></p>
+      <p class="muted" id="modelo"></p>
+      <label class="muted" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="auto" checked> Mandar solo cuando termino de hablar</label>
+    </div>
+    <div class="card">
+      <p><b>Pasar datos entre dispositivos</b></p>
+      <p class="muted">Los datos viven en este navegador. Para pasarlos a otro: Exportar acá, y en el otro pegá el texto y tocá Importar.</p>
+      <textarea id="io" rows="3" style="font:13px var(--font-mono);padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--ink);width:100%"></textarea>
+      <div style="display:flex;gap:8px"><button type="button" class="chip" id="exportar">Exportar</button><button type="button" class="chip" id="importar">Importar</button></div>
+      <p class="muted" id="io-estado"></p>
+    </div>
+  </section>
+</main>
+
+<div class="composer" id="composer">
+  <div class="composer-in">
+    <div class="chips" id="chips">
+      <button type="button" class="chip" data-t="@terminar">Terminé</button>
+      <button type="button" class="chip" data-t="Organizame el resto del día con mis reglas.">Armar el resto del día</button>
+      <button type="button" class="chip" data-t="Replanificá el resto del día desde ahora.">Replanificar</button>
+      <button type="button" class="chip" data-t="Armame el día de mañana completo.">Armar mañana</button>
+      <button type="button" class="chip" data-t="@comovengo">¿Cómo vengo?</button>
+    </div>
+    <form class="composer-row" id="form">
+      <button type="button" class="mic" id="mic" aria-label="Hablar">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v5"/></svg>
+      </button>
+      <textarea id="input" rows="1" placeholder="Hablale o escribile a tu agenda…" aria-label="Mensaje para la agenda"></textarea>
+      <button type="submit" class="send" id="send" aria-label="Enviar" disabled>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+      </button>
+    </form>
+    <p class="hint" id="hint">Conectando…</p>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* Agenda diaria: datos en este navegador, IA de Gemini con la clave del usuario, voz con el reconocimiento del navegador. */
+var CAT = {
+  estudio: ["Estudio", "--c-estudio"], lectura: ["Lectura", "--c-lectura"], negocio: ["Trabajo", "--c-negocio"],
+  fijo: ["Fijo", "--c-fijo"], finanzas: ["Finanzas", "--c-finanzas"], descanso: ["Pausa", "--c-descanso"], cuerpo: ["Cuerpo", "--c-cuerpo"]
+};
+var MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+var DIAS = ["domingo","lunes","martes","miércoles","jueves","viernes","sábado"];
+var META_MIN = 420;
+var LS = "agenda-diaria.v1";
+
+var store = { days: {}, ctx: { pendientes: [], fechas: [], reglas: "" }, key: "", model: "" };
+var viewDate = todayStr(), rowEls = [], busy = false, convo = [], ultimoDeshacer = null, limpiarTimer = null;
+
+function $(id) { return document.getElementById(id); }
+function pad(n) { return (n < 10 ? "0" : "") + n; }
+function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
+function toMin(t) { var p = String(t).split(":"); return parseInt(p[0], 10) * 60 + parseInt(p[1], 10); }
+function fmtDate(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
+function todayStr() { return fmtDate(new Date()); }
+function parseDate(s) { var p = s.split("-"); return new Date(+p[0], +p[1] - 1, +p[2]); }
+function addDays(s, n) { var d = parseDate(s); d.setDate(d.getDate() + n); return fmtDate(d); }
+function keyOf(it) { return "t" + String(it.s).replace(":", ""); }
+function nowMin() { var d = new Date(); return d.getHours() * 60 + d.getMinutes(); }
+function nowHM() { var d = new Date(); return pad(d.getHours()) + ":" + pad(d.getMinutes()); }
+function hm(min) { var h = Math.floor(min / 60), m = min % 60; return h ? (h + " h" + (m ? " " + pad(m) : "")) : (m + " min"); }
+function hint(t) { $("hint").textContent = t || ""; }
+function sortPlan(p) { return p.slice().sort(function (a, b) { return toMin(a.s) - toMin(b.s); }); }
+function dayLabel(s) { var d = parseDate(s); return DIAS[d.getDay()] + " " + d.getDate() + "/" + (d.getMonth() + 1); }
+function clone(x) { return JSON.parse(JSON.stringify(x)); }
+
+/* ---------- Almacenamiento ---------- */
+function loadStore() {
+  try { var s = JSON.parse(localStorage.getItem(LS) || "null"); if (s && typeof s === "object") store = Object.assign(store, s); } catch (e) {}
+  store.ctx = Object.assign({ pendientes: [], fechas: [], reglas: "" }, store.ctx || {});
+  store.days = store.days || {};
+}
+function save() {
+  try { localStorage.setItem(LS, JSON.stringify(store)); return true; }
+  catch (e) { hint("No se pudo guardar en este navegador."); return false; }
+}
+function getDay(f) { return store.days[f] || null; }
+function putDay(f, d) { store.days[f] = d; }
+
+/* ---------- Totales y render ---------- */
+function totals(plan, done) {
+  var r = { est: 0, tra: 0, estPlan: 0, traPlan: 0, hab: {} };
+  (plan || []).forEach(function (it) {
+    var m = toMin(it.e) - toMin(it.s); if (!(m > 0)) return;
+    var ok = !!(done && done[keyOf(it)]);
+    if (it.c === "estudio") { r.estPlan += m; if (ok) r.est += m; }
+    else if (it.c === "negocio") { r.traPlan += m; if (ok) r.tra += m; }
+    else if (ok && (it.c === "lectura" || it.c === "finanzas" || it.c === "cuerpo")) r.hab[it.c] = (r.hab[it.c] || 0) + m;
+  });
+  return r;
+}
+function groupOf(start) {
+  var m = toMin(start);
+  if (m < 11 * 60 + 30) return "Mañana";
+  if (m < 14 * 60 + 45) return "Mediodía";
+  if (m < 19 * 60 + 30) return "Tarde";
+  return "Noche";
+}
+function renderHeader() {
+  var d = parseDate(viewDate), t = todayStr();
+  var rel = viewDate === t ? "Hoy" : viewDate === addDays(t, 1) ? "Mañana" : viewDate === addDays(t, -1) ? "Ayer" : "";
+  $("eyebrow").textContent = (rel ? rel + " · " : "") + d.getDate() + " de " + MESES[d.getMonth()];
+  $("heading").textContent = "Agenda del " + DIAS[d.getDay()];
+  $("today").disabled = viewDate === t;
+}
+function renderStats() {
+  var day = getDay(viewDate) || {};
+  var tt = totals(day.plan, day.done), real = tt.est + tt.tra, plan = tt.estPlan + tt.traPlan;
+  $("st-est").textContent = hm(tt.est); $("st-est-s").textContent = "de " + hm(tt.estPlan) + " planificado";
+  $("st-tra").textContent = hm(tt.tra); $("st-tra-s").textContent = "de " + hm(tt.traPlan) + " planificado";
+  $("st-tot").textContent = hm(real); $("st-tot-s").textContent = "meta " + hm(META_MIN);
+  $("bar-real").style.width = Math.min(100, 100 * real / META_MIN) + "%";
+  $("bar-plan").style.width = Math.min(100, 100 * plan / META_MIN) + "%";
+  var habs = [];
+  if (tt.hab.lectura) habs.push("lectura " + hm(tt.hab.lectura));
+  if (tt.hab.finanzas) habs.push("inversiones " + hm(tt.hab.finanzas));
+  if (tt.hab.cuerpo) habs.push("ejercicio ✓");
+  var g = $("goal-text"); g.textContent = "";
+  if (plan) { g.appendChild(document.createTextNode("Si cumplís todo: ")); g.appendChild(el("strong", "", hm(plan))); }
+  else g.appendChild(document.createTextNode("Sin bloques de estudio o trabajo"));
+  if (habs.length) g.appendChild(document.createTextNode(" · Hábitos: " + habs.join(", ")));
+}
+function renderDates() {
+  var box = $("dates"); box.textContent = "";
+  var t = parseDate(todayStr());
+  (store.ctx.fechas || []).slice().sort(function (a, b) { return a.fecha < b.fecha ? -1 : 1; }).forEach(function (f) {
+    if (!f || !f.fecha || !f.t) return;
+    var diff = Math.round((parseDate(f.fecha) - t) / 86400000); if (diff < 0) return;
+    var c = el("span", "date-chip" + (diff <= 4 ? " soon" : ""));
+    c.appendChild(el("span", "", f.t + " · "));
+    c.appendChild(el("b", "", diff === 0 ? "hoy" : diff === 1 ? "mañana" : "en " + diff + " días"));
+    box.appendChild(c);
+  });
+}
+function renderPend() {
+  var list = (store.ctx.pendientes || []).filter(function (p) { return p && p.t; });
+  $("pend-sec").hidden = !list.length;
+  var ul = $("pend"); ul.textContent = "";
+  list.forEach(function (p) {
+    var li = el("li"); li.appendChild(el("span", "dot"));
+    li.appendChild(el("span", "", p.t + (p.para ? " (" + p.para.slice(8) + "/" + p.para.slice(5, 7) + ")" : ""))); ul.appendChild(li);
+  });
+}
+function renderAgenda() {
+  var box = $("agenda"); box.textContent = ""; rowEls = [];
+  var day = getDay(viewDate);
+  var av = day && day.aviso;
+  $("aviso").hidden = !(av && av.t);
+  if (av && av.t) { $("aviso-title").textContent = av.t; $("aviso-note").textContent = av.n || ""; }
+  if (!day || !day.plan || !day.plan.length) {
+    var e = el("div", "card empty");
+    e.appendChild(el("p", "empty-title", "No hay plan para este día"));
+    e.appendChild(el("p", "muted", store.key ? "Tocá el micrófono y contale qué querés hacer, o tocá «Armar el resto del día»." : "Primero cargá tu clave de Gemini en ⚙ Ajustes."));
+    box.appendChild(e); refreshNow(); return;
+  }
+  day.done = day.done || {};
+  var lastGroup = "", ul = null;
+  sortPlan(day.plan).forEach(function (it) {
+    var g = groupOf(it.s);
+    if (g !== lastGroup) { var sec = el("section"); sec.appendChild(el("h2", "", g)); ul = el("ul"); sec.appendChild(ul); box.appendChild(sec); lastGroup = g; }
+    var key = keyOf(it), id = "b-" + key, c = CAT[it.c] || CAT.descanso;
+    var li = el("li"), lab = el("label", "row"); lab.setAttribute("for", id); lab.style.setProperty("--c", "var(" + c[1] + ")");
+    var time = el("div", "time"); time.appendChild(document.createTextNode(it.s)); time.appendChild(el("span", "", it.e));
+    var body = el("div", "body"), meta = el("div", "meta");
+    meta.appendChild(el("span", "pill", c[0]));
+    if (it.f) meta.appendChild(el("span", "flag", "Fijo"));
+    meta.appendChild(el("span", "dur", (toMin(it.e) - toMin(it.s)) + " min"));
+    body.appendChild(meta); body.appendChild(el("p", "title", it.t));
+    if (it.n) body.appendChild(el("p", "note", it.n));
+    var cb = el("input"); cb.type = "checkbox"; cb.id = id; cb.checked = !!day.done[key];
+    lab.appendChild(time); lab.appendChild(body); lab.appendChild(cb); lab.appendChild(el("span", "box"));
+    li.appendChild(lab); ul.appendChild(li);
+    rowEls.push({ key: key, it: it, start: toMin(it.s), end: toMin(it.e), label: lab, cb: cb });
+    cb.addEventListener("change", function () { day.done[key] = cb.checked; save(); refreshNow(); });
+  });
+  refreshNow();
+}
+function refreshNow() {
+  var isToday = viewDate === todayStr(), m = nowMin(), cur = null, next = null;
+  rowEls.forEach(function (r) {
+    var isNow = isToday && m >= r.start && m < r.end;
+    r.label.classList.toggle("now", isNow);
+    r.label.classList.toggle("past", isToday && r.end <= m);
+    r.label.classList.toggle("done", r.cb.checked);
+    if (isNow) cur = r;
+    if (isToday && !next && r.start > m) next = r;
+  });
+  var a = $("ahora");
+  if (cur) {
+    a.hidden = false; $("ahora-lbl").textContent = "Ahora"; $("ahora-what").textContent = cur.it.t;
+    $("ahora-when").textContent = "Termina " + cur.it.e + " · quedan " + hm(cur.end - m) + (next ? " · después: " + next.it.t : "");
+  } else if (next) {
+    a.hidden = false; $("ahora-lbl").textContent = "Próximo"; $("ahora-what").textContent = next.it.t;
+    $("ahora-when").textContent = "Empieza " + next.it.s + " · en " + hm(next.start - m);
+  } else a.hidden = true;
+  renderStats();
+}
+function renderAll() { renderHeader(); renderAgenda(); renderDates(); renderPend(); }
+
+/* ---------- Validación de lo que devuelve la IA ---------- */
+function validarPlan(plan) {
+  if (!Array.isArray(plan) || !plan.length) throw new Error("plan vacío");
+  var out = plan.map(function (it) {
+    if (!it || typeof it !== "object") throw new Error("bloque inválido");
+    var s = String(it.s || ""), e = String(it.e || "");
+    if (!/^\d{2}:\d{2}$/.test(s) || !/^\d{2}:\d{2}$/.test(e)) throw new Error("hora inválida en '" + it.t + "'");
+    if (toMin(e) <= toMin(s)) throw new Error("el bloque '" + it.t + "' termina antes de empezar");
+    var o = { s: s, e: e, c: CAT[it.c] ? it.c : "descanso", t: String(it.t || "Bloque").slice(0, 120), n: typeof it.n === "string" ? it.n.slice(0, 300) : "" };
+    if (it.f) o.f = true;
+    return o;
+  });
+  out = sortPlan(out);
+  for (var i = 1; i < out.length; i++) if (out[i - 1].e !== out[i].s) throw new Error("hay un hueco o se pisan '" + out[i - 1].t + "' (termina " + out[i - 1].e + ") y '" + out[i].t + "' (empieza " + out[i].s + ")");
+  return out;
+}
+function validFecha(f) { if (!/^\d{4}-\d{2}-\d{2}$/.test(String(f || ""))) throw new Error("fecha inválida"); return f; }
+function prepararCambios(r) {
+  if (!r || typeof r !== "object") throw new Error("la respuesta no es un objeto");
+  var ops = (Array.isArray(r.cambios) ? r.cambios : []).map(function (c) {
+    var f = validFecha(c && c.fecha), body = {};
+    if (c.plan != null) body.plan = validarPlan(c.plan);
+    if (c.done && typeof c.done === "object") { var d = {}; Object.keys(c.done).forEach(function (k) { if (/^t\d{4}$/.test(k)) d[k] = !!c.done[k]; }); if (Object.keys(d).length) body.done = d; }
+    if (c.aviso && typeof c.aviso === "object") body.aviso = { t: String(c.aviso.t || ""), n: String(c.aviso.n || "") };
+    return { fecha: f, body: body };
+  }).filter(function (o) { return Object.keys(o.body).length; });
+  var cx = null;
+  if (r.contexto && typeof r.contexto === "object") {
+    cx = {};
+    if (Array.isArray(r.contexto.pendientes)) cx.pendientes = r.contexto.pendientes.filter(function (p) { return p && p.t; }).slice(0, 60).map(function (p) { var o = { t: String(p.t).slice(0, 200) }; if (p.para) o.para = String(p.para).slice(0, 10); return o; });
+    if (Array.isArray(r.contexto.fechas)) cx.fechas = r.contexto.fechas.filter(function (p) { return p && p.t && /^\d{4}-\d{2}-\d{2}$/.test(String(p.fecha)); }).slice(0, 30).map(function (p) { return { fecha: String(p.fecha), t: String(p.t).slice(0, 120) }; });
+    if (typeof r.contexto.reglas === "string") cx.reglas = r.contexto.reglas.slice(0, 3000);
+    if (!Object.keys(cx).length) cx = null;
+  }
+  return { ops: ops, cx: cx, respuesta: String(r.respuesta || "Listo.") };
+}
+function aplicar(prep) {
+  var antes = { dias: {}, ctx: null };
+  prep.ops.forEach(function (o) {
+    var prev = getDay(o.fecha);
+    antes.dias[o.fecha] = prev ? clone(prev) : null;
+    var d = prev ? clone(prev) : { date: o.fecha, plan: [], done: {}, aviso: { t: "", n: "" } };
+    if (o.body.plan) d.plan = o.body.plan;
+    if (o.body.done) Object.keys(o.body.done).forEach(function (k) { d.done[k] = o.body.done[k]; });
+    if (o.body.aviso) d.aviso = o.body.aviso;
+    if (d.plan.length) putDay(o.fecha, d);
+  });
+  if (prep.cx) { antes.ctx = clone(store.ctx); store.ctx = Object.assign({}, store.ctx, prep.cx); }
+  save();
+  return antes;
+}
+function deshacer() {
+  var u = ultimoDeshacer; if (!u) return false;
+  Object.keys(u.dias).forEach(function (f) { if (u.dias[f]) store.days[f] = u.dias[f]; else delete store.days[f]; });
+  if (u.ctx) store.ctx = u.ctx;
+  ultimoDeshacer = null; save(); renderAll(); hint(readyHint()); return true;
+}
+
+/* ---------- Instrucciones para la IA ---------- */
+function prompt(texto) {
+  var d = new Date(), dias = [];
+  for (var i = -1; i <= 7; i++) dias.push(addDays(todayStr(), i));
+  if (dias.indexOf(viewDate) < 0) dias.push(viewDate);
+  var datos = dias.map(function (f) {
+    var x = getDay(f);
+    if (!x || !x.plan || !x.plan.length) return { fecha: f, dia: dayLabel(f), sin_plan: true };
+    return { fecha: f, dia: dayLabel(f), plan: x.plan, done: x.done || {}, aviso: x.aviso || undefined };
+  });
+  var previa = convo.length ? "\nCONVERSACIÓN PREVIA (más vieja primero):\n" + convo.map(function (h) { return (h.u ? "Manu: " : "Vos: ") + h.x; }).join("\n").slice(-3000) + "\n" : "";
+  return [
+    "Sos el planificador diario de Manu, estudiante en Argentina (UTC-3) con un negocio de importación (TE.IMPORTAMOS.ARG) y una agencia de agentes de IA. Hablás en español rioplatense, directo y corto.",
+    "AHORA: " + DIAS[d.getDay()] + " " + todayStr() + " " + nowHM() + ". Día que Manu está mirando: " + viewDate + ".",
+    "",
+    "QUÉ HACÉS",
+    "- Manu te dicta por voz (puede haber errores de transcripción y muletillas: interpretá con sentido común, como lo haría una persona).",
+    "- Si cuenta lo que hizo: reescribí los bloques pasados de ese día con lo que pasó DE VERDAD, usando las horas que dice (\"a las 8 y 10 me puse con consultas hasta las 8 y 40\" = bloque 08:10–08:40). Si no da horas, estimá encadenando hacia atrás desde ahora y anotá 'hora aproximada' en la nota. Lo que dice que NO hizo, no se tilda: sacalo o dejalo como 'Sin registro'. Tildá con done lo que sí hizo.",
+    "- Después replanificá el resto del día desde la hora actual (redondeá a 5 min). Si dice qué va a hacer ahora o después, respetá ese orden y esas horas.",
+    "- Si pide organizar el día o el resto del día, armalo COMPLETO hasta que se acuesta (23:30 aprox.), con estudio, trabajo, hábitos, comidas y pausas según sus reglas, para maximizar la productividad.",
+    "- Si pide planear otro día ('mañana', 'el lunes'), calculá la fecha y armalo completo desde las 7:00 si no tiene plan.",
+    "- Si menciona pendientes, exámenes, entregas o reglas nuevas, devolvé el contexto actualizado (listas completas).",
+    "- Si es una pregunta (\"¿cómo vengo?\"), respondé sin cambiar nada.",
+    "",
+    "ESQUEMA DE UN BLOQUE",
+    "{\"s\":\"HH:MM\",\"e\":\"HH:MM\",\"c\":categoría,\"t\":título corto,\"n\":nota corta,\"f\":true si es fijo}. Categorías: estudio, lectura, negocio (trabajo), fijo, finanzas, descanso, cuerpo. Después de medianoche se escribe \"24:10\".",
+    "El plan de un día va COMPLETO (incluí los bloques pasados), ordenado y contiguo: el e de un bloque es igual al s del siguiente, sin huecos ni solapes.",
+    "La clave de tilde es \"t\" + hora de inicio sin los dos puntos (ej. t1350). Si cambiás la hora de inicio de un bloque tildado, tildalo con la clave nueva.",
+    "",
+    "REGLAS DE MANU",
+    "- Estudio en bloques de 50 min con pausas de 5 a 10. Trabajo en sprints de 40 a 45 min con temporizador, un tema por sprint. Alternar estudio y trabajo. Títulos de estudio tipo 'Cálculo: módulo 3'.",
+    "- Agente de WhatsApp y paneles: tope 10 a 30 min por día. Consultas de WhatsApp en 2 o 3 ventanas fijas por día.",
+    "- Comidas 40 min máximo (almuerzo ~13:00, merienda ~17:00 15 min, cena ~21:00). Siesta 20 min opcional.",
+    "- Hábitos diarios: lectura (mañana, mediodía y noche, 10 a 15 min), inversiones 15 min, LinkedIn 20 min, gimnasio o bici. El gimnasio cierra jueves 21:30 y sábado 13:00.",
+    "- Meta: ~7 h por día de estudio+trabajo (promedio real ~6 h 20); días buenos 8 h o más. Estudio un poco más que trabajo.",
+    "- Repartí las materias según cuánto falta para cada parcial (más cerca y más difícil = más módulos). La clase fija no cuenta como estudio personal.",
+    "- No inventes: lo que no esté claro va como 'sin registro' o 'sin confirmar'. Si un examen está en riesgo, ponelo en el aviso del día ({\"t\":\"\",\"n\":\"\"}).",
+    store.ctx.reglas ? "- Reglas extra: " + store.ctx.reglas : "",
+    "",
+    "CONTEXTO GUARDADO: " + JSON.stringify({ fechas: store.ctx.fechas || [], pendientes: store.ctx.pendientes || [] }),
+    "",
+    "DÍAS (ayer a +7): " + JSON.stringify(datos),
+    previa,
+    "FORMATO: respondé SOLO un objeto JSON:",
+    "{\"cambios\":[{\"fecha\":\"AAAA-MM-DD\",\"plan\":[...completo...],\"done\":{\"tHHMM\":true},\"aviso\":{\"t\":\"\",\"n\":\"\"}}],\"contexto\":{\"pendientes\":[{\"t\":\"\",\"para\":\"AAAA-MM-DD\"}],\"fechas\":[{\"fecha\":\"AAAA-MM-DD\",\"t\":\"\"}],\"reglas\":\"\"},\"respuesta\":\"texto\"}",
+    "- cambios: un elemento por día que cambia; plan opcional (si va, va completo); done opcional, solo las claves que cambian (true/false); aviso opcional. contexto opcional.",
+    "- respuesta: corta, texto plano sin markdown: qué registraste, qué cambió, qué arranca ahora (hora y bloque) y totales tildados de estudio y trabajo de hoy. Si algo no está claro, hacé UNA pregunta y no cambies nada.",
+    "",
+    "MENSAJE DE MANU:", texto
+  ].join("\n");
+}
+
+/* ---------- Gemini ---------- */
+var API = "https://generativelanguage.googleapis.com/v1beta/";
+function errApi(status, txt) {
+  var m = ""; try { m = JSON.parse(txt).error.message || ""; } catch (e) {}
+  var err = new Error(m || ("error " + status)); err.status = status; return err;
+}
+async function elegirModelo() {
+  if (store.model) return store.model;
+  var r = await fetch(API + "models?pageSize=200", { headers: { "x-goog-api-key": store.key } });
+  if (!r.ok) throw errApi(r.status, await r.text());
+  var j = await r.json();
+  var ms = (j.models || []).filter(function (m) { return (m.supportedGenerationMethods || []).indexOf("generateContent") >= 0; }).map(function (m) { return m.name.replace(/^models\//, ""); });
+  function ver(n) { var m = n.match(/gemini-(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; }
+  var malo = /image|tts|live|audio|embedding|thinking|lite|exp|8b|robotics|computer/;
+  var estables = ms.filter(function (n) { return /^gemini-[\d.]+-flash$/.test(n); }).sort(function (a, b) { return ver(b) - ver(a); });
+  var otros = ms.filter(function (n) { return /flash/.test(n) && !malo.test(n); }).sort(function (a, b) { return ver(b) - ver(a); });
+  var lite = ms.filter(function (n) { return /flash-lite/.test(n) && !/image|tts|live|audio/.test(n); }).sort(function (a, b) { return ver(b) - ver(a); });
+  var elegido = estables[0] || (ms.indexOf("gemini-flash-latest") >= 0 ? "gemini-flash-latest" : null) || otros[0] || lite[0] || ms[0];
+  if (!elegido) throw new Error("tu clave no tiene modelos disponibles");
+  store.model = elegido; save(); renderAjustes();
+  return elegido;
+}
+async function gemini(texto, reintento) {
+  var model = await elegirModelo();
+  var r = await fetch(API + "models/" + encodeURIComponent(model) + ":generateContent", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": store.key },
+    body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: texto }] }], generationConfig: { responseMimeType: "application/json", temperature: 0.3 } })
+  });
+  if (!r.ok) {
+    var txt = await r.text();
+    if ((r.status === 404 || r.status === 400 && /model/i.test(txt)) && !reintento) { store.model = ""; save(); return gemini(texto, true); }
+    throw errApi(r.status, txt);
+  }
+  var j = await r.json();
+  var c = j.candidates && j.candidates[0];
+  var out = c && c.content && c.content.parts ? c.content.parts.map(function (p) { return p.text || ""; }).join("") : "";
+  if (!out) throw new Error("la IA no respondió nada" + (c && c.finishReason ? " (" + c.finishReason + ")" : ""));
+  return out;
+}
+function parseJSON(s) {
+  try { return JSON.parse(s); } catch (e) {}
+  var m = s.match(/```(?:json)?\s*([\s\S]*?)```/); if (m) { try { return JSON.parse(m[1]); } catch (e) {} }
+  var a = s.indexOf("{"), b = s.lastIndexOf("}"); if (a >= 0 && b > a) return JSON.parse(s.slice(a, b + 1));
+  throw new Error("la respuesta no es JSON");
+}
+
+/* ---------- Chat ---------- */
+function addMsg(who, text, cls) { $("chat-sec").hidden = false; var m = el("div", "msg " + who + (cls ? " " + cls : ""), text); $("chat").appendChild(m); return m; }
+function botones(m) {
+  var row = el("div"); row.style.cssText = "display:flex;gap:8px;margin-top:8px;flex-wrap:wrap";
+  var x = el("button", "chip", "Cerrar"); x.type = "button";
+  x.addEventListener("click", cerrarChat); row.appendChild(x); m.appendChild(row); return row;
+}
+function cerrarChat() { clearTimeout(limpiarTimer); $("chat").textContent = ""; $("chat-sec").hidden = true; }
+
+function mensajeError(e) {
+  var s = e && e.status;
+  if (s === 400 && /api key/i.test(e.message)) return "La clave de Gemini no es válida. Revisala en ⚙ Ajustes.";
+  if (s === 401 || s === 403) return "Google rechazó la clave de Gemini. Revisala en ⚙ Ajustes.";
+  if (s === 429) return "Llegaste al límite gratis de Gemini por minuto o por día. Esperá un minuto y mandalo de nuevo.";
+  if (s >= 500) return "Gemini está con problemas. Probá de nuevo en un rato.";
+  if (e && e.name === "TypeError") return "Sin conexión a internet.";
+  return "No pude procesarlo: " + ((e && e.message) || "error") + ".";
+}
+
+async function enviar(texto) {
+  texto = (texto || "").trim();
+  if (!texto || busy) return;
+  if (!store.key) { abrirAjustes(); hint("Cargá tu clave de Gemini para que la agenda entienda lo que decís."); return; }
+  busy = true; updateSend(); $("input").value = ""; autosize();
+  cerrarChat();
+  var yo = addMsg("yo", texto), out = addMsg("ag", "Pensando…");
+  var t0 = Date.now(), tick = setInterval(function () { out.textContent = "Pensando… " + Math.round((Date.now() - t0) / 1000) + " s"; }, 1000);
+  try {
+    var p = prompt(texto), r, prep;
+    try { prep = prepararCambios(parseJSON(await gemini(p))); }
+    catch (e1) {
+      if (e1 && e1.status) throw e1;
+      prep = prepararCambios(parseJSON(await gemini(p + "\n\nTu respuesta anterior tuvo este problema: " + e1.message + ". Corregilo y respondé solo el JSON.")));
+    }
+    clearInterval(tick);
+    var huboCambios = prep.ops.length || prep.cx;
+    if (huboCambios) ultimoDeshacer = aplicar(prep);
+    convo.push({ u: true, x: texto }, { u: false, x: prep.respuesta }); if (convo.length > 8) convo = convo.slice(-8);
+    var hoy = todayStr(), irA = prep.ops.length && !prep.ops.some(function (o) { return o.fecha === viewDate; }) ? prep.ops[0].fecha : null;
+    if (irA) viewDate = irA;
+    renderAll();
+    out.textContent = prep.respuesta;
+    var row = botones(out);
+    if (huboCambios) {
+      yo.remove();
+      var un = el("button", "chip", "Deshacer"); un.type = "button";
+      un.addEventListener("click", function () { if (deshacer()) { out.textContent = "Listo, deshice el último cambio."; limpiarTimer = setTimeout(cerrarChat, 4000); } });
+      row.appendChild(un);
+      limpiarTimer = setTimeout(cerrarChat, 20000);
+      hint("Cambios guardados.");
+    } else hint(readyHint());
+  } catch (err) {
+    clearInterval(tick);
+    out.classList.add("err"); out.textContent = mensajeError(err); botones(out);
+    $("input").value = texto; autosize(); hint(readyHint());
+  } finally {
+    clearInterval(tick); busy = false; updateSend();
+  }
+}
+
+/* Acciones rápidas que no gastan IA */
+function terminarActual() {
+  var hoy = todayStr(), d = getDay(hoy), m = nowMin();
+  if (!d || !d.plan) return;
+  var b = d.plan.find(function (x) { return toMin(x.s) <= m && m < toMin(x.e); });
+  cerrarChat();
+  if (!b) { var o = addMsg("ag", "No hay ningún bloque en curso."); botones(o); return; }
+  d.done = d.done || {}; d.done[keyOf(b)] = true; save(); viewDate = hoy; renderAll();
+  var o2 = addMsg("ag", "Tildé " + b.t + "."); botones(o2); limpiarTimer = setTimeout(cerrarChat, 6000);
+}
+function comoVengo() {
+  var hoy = todayStr(), d = getDay(hoy) || {}, tt = totals(d.plan, d.done), l = [];
+  l.push("Hoy: estudio " + hm(tt.est) + " · trabajo " + hm(tt.tra) + " · total " + hm(tt.est + tt.tra) + " de " + hm(META_MIN) + ".");
+  var t = parseDate(hoy);
+  (store.ctx.fechas || []).slice().sort(function (a, b) { return a.fecha < b.fecha ? -1 : 1; }).forEach(function (f) {
+    var diff = Math.round((parseDate(f.fecha) - t) / 86400000); if (diff < 0) return;
+    var mat = (f.t.match(/de ([A-Za-zÁÉÍÓÚáéíóúñ]+)/) || [])[1], est = 0, plan = 0;
+    if (mat) Object.keys(store.days).forEach(function (k) {
+      if (k > f.fecha) return; var x = store.days[k];
+      (x.plan || []).forEach(function (b) {
+        if (b.c !== "estudio" || b.t.toLowerCase().indexOf(mat.toLowerCase()) < 0) return;
+        var mm = toMin(b.e) - toMin(b.s);
+        if (x.done && x.done[keyOf(b)]) est += mm; else if (k >= hoy && k < f.fecha) plan += mm;
+      });
+    });
+    l.push("• " + f.t + ": " + (diff === 0 ? "hoy" : diff === 1 ? "mañana" : "en " + diff + " días") + (mat ? " · estudiado " + hm(est) + ", planificado " + hm(plan) + (diff <= 4 && plan < 150 ? " ⚠️" : "") : ""));
+  });
+  cerrarChat(); botones(addMsg("ag", l.join("\n")));
+}
+
+/* ---------- Voz ---------- */
+var SR = window.SpeechRecognition || window.webkitSpeechRecognition, rec = null, escuchando = false, baseText = "", finalText = "";
+function iniciarVoz() {
+  if (!SR) { $("input").focus(); hint("Este navegador no graba voz: usá el micrófono del teclado y mandalo con la flecha."); return; }
+  if (escuchando) { rec.stop(); return; }
+  rec = new SR(); rec.lang = "es-AR"; rec.continuous = true; rec.interimResults = true;
+  baseText = $("input").value ? $("input").value.replace(/\s*$/, " ") : ""; finalText = "";
+  rec.onresult = function (e) {
+    var interim = "";
+    for (var i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) finalText += e.results[i][0].transcript + " "; else interim += e.results[i][0].transcript;
+    }
+    $("input").value = baseText + finalText + interim; autosize();
+  };
+  rec.onerror = function (e) {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") hint("Tenés que permitir el micrófono para esta página en el navegador.");
+    else if (e.error !== "no-speech" && e.error !== "aborted") hint("Error del micrófono: " + e.error);
+  };
+  rec.onend = function () {
+    escuchando = false; $("mic").classList.remove("on"); $("mic").setAttribute("aria-label", "Hablar");
+    var txt = $("input").value.trim();
+    if (txt && $("auto").checked) enviar(txt); else hint(readyHint());
+  };
+  try { rec.start(); escuchando = true; $("mic").classList.add("on"); $("mic").setAttribute("aria-label", "Terminar y enviar"); hint("Te escucho… tocá el micrófono de nuevo para terminar."); }
+  catch (e) { hint("No se pudo usar el micrófono."); }
+}
+
+/* ---------- Composer ---------- */
+function readyHint() { return store.key ? (SR ? "Tocá 🎙️, hablá y tocá de nuevo para mandarlo." : "Escribí o dictá con el teclado.") : "Falta la clave de Gemini: ⚙ Ajustes."; }
+function autosize() { var t = $("input"); t.style.height = "auto"; t.style.height = Math.min(140, t.scrollHeight) + "px"; updateSend(); }
+function updateSend() { $("send").disabled = busy || !$("input").value.trim(); }
+$("input").addEventListener("input", autosize);
+$("input").addEventListener("keydown", function (e) { if (e.key === "Enter" && !e.shiftKey && window.matchMedia("(pointer: fine)").matches) { e.preventDefault(); enviar($("input").value); } });
+$("form").addEventListener("submit", function (e) { e.preventDefault(); enviar($("input").value); });
+$("mic").addEventListener("click", iniciarVoz);
+Array.prototype.forEach.call(document.querySelectorAll(".chip[data-t]"), function (c) {
+  c.addEventListener("click", function () {
+    var t = c.getAttribute("data-t");
+    if (t === "@terminar") return terminarActual();
+    if (t === "@comovengo") return comoVengo();
+    enviar(t);
+  });
+});
+
+/* ---------- Navegación ---------- */
+function go(f) { viewDate = f; renderAll(); }
+$("prev").addEventListener("click", function () { go(addDays(viewDate, -1)); });
+$("next").addEventListener("click", function () { go(addDays(viewDate, 1)); });
+$("today").addEventListener("click", function () { go(todayStr()); });
+var lastToday = todayStr();
+setInterval(function () { var t = todayStr(); if (t !== lastToday) { if (viewDate === lastToday) viewDate = t; lastToday = t; renderAll(); } else refreshNow(); }, 30000);
+
+/* ---------- Ajustes ---------- */
+function abrirAjustes() { $("ajustes").hidden = false; $("key").value = store.key || ""; renderAjustes(); $("ajustes").scrollIntoView({ behavior: "smooth" }); }
+function renderAjustes() { $("modelo").textContent = store.model ? "Modelo: " + store.model : "El modelo se elige solo la primera vez."; }
+$("btn-ajustes").addEventListener("click", function () { if ($("ajustes").hidden) abrirAjustes(); else $("ajustes").hidden = true; });
+$("guardar-key").addEventListener("click", async function () {
+  store.key = $("key").value.trim(); store.model = ""; save();
+  if (!store.key) { $("key-estado").textContent = "Clave borrada."; return; }
+  $("key-estado").textContent = "Probando la clave…";
+  try { var m = await elegirModelo(); $("key-estado").textContent = "✓ Funciona. Modelo: " + m + "."; hint(readyHint()); renderAgenda(); }
+  catch (e) { $("key-estado").textContent = mensajeError(e); }
+});
+$("exportar").addEventListener("click", function () {
+  var data = JSON.stringify({ days: store.days, ctx: store.ctx });
+  $("io").value = data;
+  try { navigator.clipboard.writeText(data).then(function () { $("io-estado").textContent = "Copiado. Pegalo en Importar en el otro dispositivo."; }, function () { $("io-estado").textContent = "Copiá el texto de la caja."; }); } catch (e) { $("io-estado").textContent = "Copiá el texto de la caja."; }
+});
+$("importar").addEventListener("click", function () {
+  try {
+    var d = JSON.parse($("io").value);
+    if (!d || typeof d !== "object" || (!d.days && !d.ctx)) throw new Error();
+    Object.keys(d.days || {}).forEach(function (f) { if (/^\d{4}-\d{2}-\d{2}$/.test(f) && d.days[f] && Array.isArray(d.days[f].plan)) store.days[f] = d.days[f]; });
+    if (d.ctx) store.ctx = Object.assign({ pendientes: [], fechas: [], reglas: "" }, d.ctx);
+    save(); renderAll(); $("io-estado").textContent = "✓ Importado."; $("io").value = "";
+  } catch (e) { $("io-estado").textContent = "Ese texto no es una exportación válida."; }
+});
+$("auto").addEventListener("change", function () { try { localStorage.setItem(LS + ".auto", $("auto").checked ? "1" : "0"); } catch (e) {} });
+
+/* ---------- Arranque ---------- */
+loadStore();
+try { $("auto").checked = localStorage.getItem(LS + ".auto") !== "0"; } catch (e) {}
+renderAll();
+hint(readyHint()); updateSend();
+if (!store.key) abrirAjustes();
+</script>
+</body>
+</html>
