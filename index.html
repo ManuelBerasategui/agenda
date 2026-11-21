@@ -145,6 +145,12 @@ ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: col
 .composer textarea:focus { outline: 2px solid var(--accent); outline-offset: 0; }
 .mic, .send { width: 48px; height: 48px; border-radius: 50%; border: none; cursor: pointer; flex-shrink: 0; display: grid; place-items: center; }
 a { color: var(--accent); }
+.hist li { display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 4px; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 14px; }
+.hist li:last-child { border-bottom: none; }
+.hist .hd { font-weight: 600; text-transform: capitalize; }
+.hist .hb { height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; display: flex; }
+.hist .hb span { display: block; height: 100%; }
+.hist .ht { font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
 .mic { background: var(--surface); border: 1px solid var(--line); color: var(--ink); }
 .mic.on { background: var(--warn); color: #fff; border-color: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
 .send { background: var(--accent); color: var(--accent-ink); }
@@ -207,6 +213,14 @@ a { color: var(--accent); }
   <section id="pend-sec" hidden>
     <h2>Pendientes</h2>
     <div class="card"><ul class="pend" id="pend"></ul></div>
+  </section>
+
+  <section id="hist-sec" hidden>
+    <h2>Historial</h2>
+    <div class="card">
+      <p id="hist-resumen"></p>
+      <ul class="hist" id="hist"></ul>
+    </div>
   </section>
 
   <section id="ajustes" hidden>
@@ -419,7 +433,35 @@ function refreshNow() {
   } else a.hidden = true;
   renderStats();
 }
-function renderAll() { renderHeader(); renderAgenda(); renderDates(); renderPend(); }
+function historial(n) {
+  var hoy = todayStr();
+  return Object.keys(store.days).filter(function (f) { return f < hoy; }).sort().reverse().slice(0, n || 60).map(function (f) {
+    var d = store.days[f], tt = totals(d.plan, d.done); return { fecha: f, est: tt.est, tra: tt.tra };
+  }).filter(function (x) { return x.est + x.tra > 0; });
+}
+function renderHist() {
+  var hs = historial(60);
+  $("hist-sec").hidden = !hs.length;
+  if (!hs.length) return;
+  var u7 = hs.filter(function (x) { return x.fecha >= addDays(todayStr(), -7); });
+  var prom = function (arr, k) { return arr.length ? Math.round(arr.reduce(function (a, x) { return a + (k ? x[k] : x.est + x.tra); }, 0) / arr.length) : 0; };
+  var mejor = hs.slice().sort(function (a, b) { return (b.est + b.tra) - (a.est + a.tra); })[0];
+  $("hist-resumen").textContent = "Promedio últimos 7 días: " + hm(prom(u7)) + " (estudio " + hm(prom(u7, "est")) + ", trabajo " + hm(prom(u7, "tra")) + "). Promedio total: " + hm(prom(hs)) + " en " + hs.length + " días. Mejor día: " + dayLabel(mejor.fecha) + " con " + hm(mejor.est + mejor.tra) + ".";
+  var ul = $("hist"); ul.textContent = "";
+  var max = Math.max(480, mejor.est + mejor.tra);
+  hs.forEach(function (x) {
+    var li = el("li"); li.title = "Ver ese día";
+    li.appendChild(el("span", "hd", dayLabel(x.fecha)));
+    var bar = el("span", "hb"), a = el("span"), b = el("span");
+    a.style.width = (100 * x.est / max) + "%"; a.style.background = "var(--c-estudio)";
+    b.style.width = (100 * x.tra / max) + "%"; b.style.background = "var(--c-negocio)";
+    bar.appendChild(a); bar.appendChild(b); li.appendChild(bar);
+    li.appendChild(el("span", "ht", hm(x.est + x.tra)));
+    li.addEventListener("click", function () { go(x.fecha); window.scrollTo({ top: 0, behavior: "smooth" }); });
+    ul.appendChild(li);
+  });
+}
+function renderAll() { renderHeader(); renderAgenda(); renderDates(); renderPend(); renderHist(); }
 
 /* ---------- Validación de lo que devuelve la IA ---------- */
 function validarPlan(plan) {
@@ -518,6 +560,7 @@ function prompt(texto) {
     "- No inventes: lo que no esté claro va como 'sin registro' o 'sin confirmar'. Si un examen está en riesgo, ponelo en el aviso del día ({\"t\":\"\",\"n\":\"\"}).",
     store.ctx.reglas ? "- Reglas extra: " + store.ctx.reglas : "",
     "",
+    "HISTORIAL (minutos tildados por día, últimos 7): " + JSON.stringify(historial(7).map(function (x) { return { f: x.fecha, est: x.est, tra: x.tra }; })),
     "CONTEXTO GUARDADO: " + JSON.stringify({ fechas: store.ctx.fechas || [], pendientes: store.ctx.pendientes || [] }),
     "",
     "DÍAS (hoy, mañana y el que está mirando): " + JSON.stringify(datos),
