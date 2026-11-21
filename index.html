@@ -220,6 +220,8 @@ a { color: var(--accent); }
       </div>
       <p class="muted" id="key-estado"></p>
       <p class="muted" id="modelo"></p>
+      <select id="modelos" hidden style="font:inherit;padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--ink)"></select>
+      <p class="muted">Si tarda mucho o falla, probá otro modelo de la lista (los «flash» y «flash-lite» son los más rápidos).</p>
       <label class="muted" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="auto" checked> Mandar solo cuando termino de hablar</label>
     </div>
     <div class="card">
@@ -480,7 +482,7 @@ function deshacer() {
 /* ---------- Instrucciones para la IA ---------- */
 function prompt(texto) {
   var d = new Date(), dias = [];
-  for (var i = -1; i <= 7; i++) dias.push(addDays(todayStr(), i));
+  for (var i = 0; i <= 1; i++) dias.push(addDays(todayStr(), i));
   if (dias.indexOf(viewDate) < 0) dias.push(viewDate);
   var datos = dias.map(function (f) {
     var x = getDay(f);
@@ -518,7 +520,7 @@ function prompt(texto) {
     "",
     "CONTEXTO GUARDADO: " + JSON.stringify({ fechas: store.ctx.fechas || [], pendientes: store.ctx.pendientes || [] }),
     "",
-    "DÍAS (ayer a +7): " + JSON.stringify(datos),
+    "DÍAS (hoy, mañana y el que está mirando): " + JSON.stringify(datos),
     previa,
     "FORMATO: respondé SOLO un objeto JSON:",
     "{\"cambios\":[{\"fecha\":\"AAAA-MM-DD\",\"plan\":[...completo...],\"done\":{\"tHHMM\":true},\"aviso\":{\"t\":\"\",\"n\":\"\"}}],\"contexto\":{\"pendientes\":[{\"t\":\"\",\"para\":\"AAAA-MM-DD\"}],\"fechas\":[{\"fecha\":\"AAAA-MM-DD\",\"t\":\"\"}],\"reglas\":\"\"},\"respuesta\":\"texto\"}",
@@ -548,18 +550,37 @@ async function elegirModelo() {
   var lite = ms.filter(function (n) { return /flash-lite/.test(n) && !/image|tts|live|audio/.test(n); }).sort(function (a, b) { return ver(b) - ver(a); });
   var elegido = estables[0] || (ms.indexOf("gemini-flash-latest") >= 0 ? "gemini-flash-latest" : null) || otros[0] || lite[0] || ms[0];
   if (!elegido) throw new Error("tu clave no tiene modelos disponibles");
+  store.modelos = ms.filter(function (n) { return /^gemini/.test(n) && !/image|tts|live|audio|embedding|robotics|computer/.test(n); });
   store.model = elegido; save(); renderAjustes();
   return elegido;
 }
+function configPensar(model) {
+  if (store.sinPensar === false) return null;
+  if (/gemini-2\.5/.test(model)) return { thinkingBudget: /pro/.test(model) ? 128 : 0 };
+  if (/gemini-[3-9]/.test(model) || /latest/.test(model)) return { thinkingLevel: "low" };
+  return null;
+}
 async function gemini(texto, reintento) {
   var model = await elegirModelo();
-  var r = await fetch(API + "models/" + encodeURIComponent(model) + ":generateContent", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-goog-api-key": store.key },
-    body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: texto }] }], generationConfig: { responseMimeType: "application/json", temperature: 0.3 } })
-  });
+  var gc = { responseMimeType: "application/json", temperature: 0.3, maxOutputTokens: 8192 };
+  var tc = configPensar(model); if (tc) gc.thinkingConfig = tc;
+  var ctl = new AbortController(), timer = setTimeout(function () { ctl.abort(); }, 60000);
+  var r;
+  try {
+    r = await fetch(API + "models/" + encodeURIComponent(model) + ":generateContent", {
+      method: "POST", signal: ctl.signal,
+      headers: { "Content-Type": "application/json", "x-goog-api-key": store.key },
+      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: texto }] }], generationConfig: gc })
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    if (e && e.name === "AbortError") { var t = new Error("Gemini tardó más de 60 segundos"); t.status = 408; throw t; }
+    throw e;
+  }
+  clearTimeout(timer);
   if (!r.ok) {
     var txt = await r.text();
+    if (r.status === 400 && /thinking/i.test(txt) && store.sinPensar !== false) { store.sinPensar = false; save(); return gemini(texto, reintento); }
     if ((r.status === 404 || r.status === 400 && /model/i.test(txt)) && !reintento) { store.model = ""; save(); return gemini(texto, true); }
     throw errApi(r.status, txt);
   }
@@ -589,6 +610,7 @@ function mensajeError(e) {
   var s = e && e.status;
   if (s === 400 && /api key/i.test(e.message)) return "La clave de Gemini no es válida. Revisala en ⚙ Ajustes.";
   if (s === 401 || s === 403) return "Google rechazó la clave de Gemini. Revisala en ⚙ Ajustes.";
+  if (s === 408) return "Gemini tardó demasiado en responder. Probá de nuevo; si se repite, cambiá de modelo en ⚙ Ajustes.";
   if (s === 429) return "Llegaste al límite gratis de Gemini por minuto o por día. Esperá un minuto y mandalo de nuevo.";
   if (s >= 500) return "Gemini está con problemas. Probá de nuevo en un rato.";
   if (e && e.name === "TypeError") return "Sin conexión a internet.";
@@ -602,7 +624,7 @@ async function enviar(texto) {
   busy = true; updateSend(); $("input").value = ""; autosize();
   cerrarChat();
   var yo = addMsg("yo", texto), out = addMsg("ag", "Pensando…");
-  var t0 = Date.now(), tick = setInterval(function () { out.textContent = "Pensando… " + Math.round((Date.now() - t0) / 1000) + " s"; }, 1000);
+  var t0 = Date.now(), tick = setInterval(function () { out.textContent = "Pensando… " + Math.round((Date.now() - t0) / 1000) + " s" + (store.model ? " · " + store.model : ""); }, 1000);
   try {
     var p = prompt(texto), r, prep;
     try { prep = prepararCambios(parseJSON(await gemini(p))); }
@@ -720,7 +742,13 @@ setInterval(function () { var t = todayStr(); if (t !== lastToday) { if (viewDat
 
 /* ---------- Ajustes ---------- */
 function abrirAjustes() { $("ajustes").hidden = false; $("key").value = store.key || ""; renderAjustes(); $("ajustes").scrollIntoView({ behavior: "smooth" }); }
-function renderAjustes() { $("modelo").textContent = store.model ? "Modelo: " + store.model : "El modelo se elige solo la primera vez."; }
+function renderAjustes() {
+  $("modelo").textContent = store.model ? "Modelo: " + store.model : "El modelo se elige solo la primera vez.";
+  var sel = $("modelos"); if (!sel) return;
+  sel.hidden = !(store.modelos && store.modelos.length);
+  sel.textContent = "";
+  (store.modelos || []).forEach(function (m) { var o = el("option", "", m); o.value = m; if (m === store.model) o.selected = true; sel.appendChild(o); });
+}
 $("btn-ajustes").addEventListener("click", function () { if ($("ajustes").hidden) abrirAjustes(); else $("ajustes").hidden = true; });
 $("guardar-key").addEventListener("click", async function () {
   store.key = $("key").value.trim(); store.model = ""; save();
@@ -743,6 +771,7 @@ $("importar").addEventListener("click", function () {
     save(); renderAll(); $("io-estado").textContent = "✓ Importado."; $("io").value = "";
   } catch (e) { $("io-estado").textContent = "Ese texto no es una exportación válida."; }
 });
+$("modelos").addEventListener("change", function () { store.model = $("modelos").value; store.sinPensar = undefined; save(); renderAjustes(); });
 $("auto").addEventListener("change", function () { try { localStorage.setItem(LS + ".auto", $("auto").checked ? "1" : "0"); } catch (e) {} });
 
 /* ---------- Arranque ---------- */
