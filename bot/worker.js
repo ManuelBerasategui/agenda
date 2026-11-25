@@ -257,7 +257,7 @@ async function reacomodar(env, hoy) {
   const ts = (await tareasDesde(env, hoy, hoy)).filter((t) => t.inicio && t.inicio.length > 10 && t.fin && t.inicio.slice(0, 10) === hoy && !t.evento);
   const fijo = (t) => t.hecho || t.estado === "En progreso" || /cursada|gimnasio|ejercicio|parcial|consulta|clase|sue[ñn]o/i.test(t.nombre);
   const placed = [];
-  ts.filter(fijo).forEach((t) => placed.push([Date.parse(t.inicio), Date.parse(t.fin)]));
+  ts.filter(fijo).forEach((t) => placed.push([Date.parse(t.inicio), Math.max(Date.parse(t.fin), t.estado === "En progreso" && t.min ? Date.parse(t.inicio) + t.min * 60e3 : 0)]));
   const movibles = ts.filter((t) => !fijo(t)).sort((a, b) => Date.parse(a.inicio) - Date.parse(b.inicio));
   const movidos = [];
   for (const t of movibles) {
