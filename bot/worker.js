@@ -262,7 +262,9 @@ async function procesar(env, msg) {
 /* Hábitos diarios que se penalizan si no se hacen: habilidad -> minutos por defecto */
 const HABITOS = { "Ejercicio": 60, "Lectura": 30, "Finanzas": 15, "Marca Personal": 30, "Espiritual": 7 };
 const NOMBRE_HABITO = { "Ejercicio": "Ejercicio", "Lectura": "Lectura", "Finanzas": "Estudiar Inversiones", "Marca Personal": "Marca Personal", "Espiritual": "Meditar" };
+const PENALIZAR_DESDE = "2026-11-26"; /* el sistema recién arranca mañana: antes de esa fecha no se penaliza */
 async function penalizarDia(env, fecha) {
+  if (fecha < PENALIZAR_DESDE) return { n: 0, pts: 0, lista: [], plan: 0, hecho: 0, omitido: true };
   const ts = await tareasDesde(env, fecha, fecha);
   const delDia = ts.filter((t) => t.inicio && t.inicio.slice(0, 10) === fecha && !t.evento);
   let n = 0, pts = 0; const lista = [];
@@ -309,6 +311,7 @@ export default {
       try {
         if (event.cron === "59 2 * * *") {
           const r = await penalizarDia(env, fechaAR(new Date(Date.now() - 10 * 60e3)));
+          if (r.omitido) return;
           let m = "⏰ Cierre del día: ";
           m += r.n ? "hábitos sin cumplir: " + r.lista.join(", ") + " (" + r.pts + " puntos perdidos)." : "cumpliste todos tus hábitos, sin penalización.";
           if (r.plan) m += "\nEstudio y trabajo: hiciste " + Math.round(r.hecho / 6) / 10 + " h de " + Math.round(r.plan / 6) / 10 + " h planificadas (esto no penaliza).";
