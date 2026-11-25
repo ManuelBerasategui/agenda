@@ -51,6 +51,7 @@ function leerTarea(p) {
     inicio: pr["Fecha Inicio"] && pr["Fecha Inicio"].date ? pr["Fecha Inicio"].date.start : null,
     fin: pr["Fecha Fin"] && pr["Fecha Fin"].date ? pr["Fecha Fin"].date.start : null,
     evento: !!(pr["Es evento"] && pr["Es evento"].checkbox),
+    desc: pr["Descripción"] && pr["Descripción"].rich_text ? pr["Descripción"].rich_text.map((t) => t.plain_text).join("") : "",
     pen: !!(pr["Penalizado"] && pr["Penalizado"].checkbox),
     perdidos: pr["Puntos perdidos"] ? pr["Puntos perdidos"].number : null
   };
@@ -82,12 +83,27 @@ function propsDe(a) {
   if (a.nota) p["Descripción"] = { rich_text: [{ text: { content: String(a.nota).slice(0, 1900) } }] };
   return p;
 }
-async function aplicarAcciones(env, acciones, validos) {
+async function aplicarAcciones(env, acciones, validos, sem, hoy) {
   const log = [];
   for (const a of acciones || []) {
     try {
       if (a.estado && ["Pendientes", "En progreso", "Hecho"].indexOf(a.estado) < 0) a.estado = "";
-      if (a.op === "crear") {
+      if (a.op === "sumar") {
+        const min = Math.round(+a.min);
+        if (!(min > 0)) { log.push("saltée una suma sin minutos"); continue; }
+        const nombre = "Trabajo Diario", fecha = hoy, linea = horaAR(new Date()) + " · " + (a.detalle || "trabajo") + " (" + min + " min)";
+        let c = (sem || []).find((t) => t.nombre === nombre && t.inicio && t.inicio.slice(0, 10) === fecha);
+        if (c) {
+          const total = (c.hecho ? (c.min || 0) : 0) + min, desc = ((c.desc ? c.desc + "\n" : "") + linea).slice(-1900);
+          await notion(env, "pages/" + c.id, "PATCH", { properties: { "Duración (min)": { number: total }, "Estado": { status: { name: "Hecho" } }, "Completado": { checkbox: true }, "Descripción": { rich_text: [{ text: { content: desc } }] } } });
+          c.hecho = true; c.min = total; c.desc = desc;
+          log.push("sumé " + min + " min a Trabajo Diario (total " + total + ")");
+        } else {
+          const pg = await notion(env, "pages", "POST", { parent: { database_id: DB }, properties: { "Nombre": { title: [{ text: { content: nombre } }] }, "Habilidad": { relation: [{ id: HAB["Trabajo"] }] }, "Duración (min)": { number: min }, "Fecha Inicio": { date: { start: fecha } }, "Fecha Fin": { date: { start: fecha } }, "Estado": { status: { name: "Hecho" } }, "Completado": { checkbox: true }, "Descripción": { rich_text: [{ text: { content: linea } }] } } });
+          (sem || []).push({ id: pg.id, nombre, hecho: true, min, desc: linea, inicio: fecha, habilidad: "Trabajo" });
+          log.push("creé Trabajo Diario con " + min + " min");
+        }
+      } else if (a.op === "crear") {
         if (!a.nombre || !a.habilidad || !HAB[a.habilidad]) { log.push("saltée una tarea sin nombre o habilidad válida"); continue; }
         await notion(env, "pages", "POST", { parent: { database_id: DB }, properties: propsDe(a) });
         log.push("creé " + a.nombre);
@@ -121,7 +137,7 @@ function resumen(tareas, hoy) {
 
 /* ---------- Gemini ---------- */
 function prompt(hoy, ahora, tareasHoy, tareasSem, texto, hayAudio, proximas) {
-  const comp = (t) => ({ id: t.id, n: t.nombre, h: t.habilidad, min: t.min, ok: t.hecho, est: t.estado, ini: t.inicio, fin: t.fin });
+  const comp = (t) => ({ id: t.id, n: t.nombre, h: t.habilidad, min: t.min, ok: t.hecho, est: t.estado, ini: t.inicio, fin: t.fin, d: (t.desc || "").slice(-400) });
   return [
     "Sos el agente de Manu (estudiante en Argentina, UTC-3, habla en rioplatense). Maneja su RPG de Notion: cada tarea tiene una Habilidad y una duración real en minutos; al marcarla Hecho se le suma XP a la habilidad. Respondé SOLO JSON.",
     "HOY: " + hoy + " (" + diaSemana(hoy) + "). AHORA: " + ahora + ".",
@@ -146,12 +162,13 @@ function prompt(hoy, ahora, tareasHoy, tareasSem, texto, hayAudio, proximas) {
     "- Hábitos diarios a incluir: lectura (10-15 min, mañana/mediodía/noche), inversiones 15 min (Finanzas), LinkedIn/Marca Personal 20 min, ejercicio (gimnasio o bici), meditar. Comidas máx 40 min (almuerzo ~13:00, merienda ~17:00, cena ~21:00), siesta 20 min opcional. El gimnasio cierra jueves 21:30 y sábado 13:00: si dice que va al gimnasio, ponelo antes del cierre.",
     "- REPROGRAMAR a mitad del día ('al final estudié X horas', 'no cursé', 'reorganizame todo'): 1) registrá lo que hizo como tareas reales con minutos reales y estado 'Hecho' (si ya existe la tarea de hoy, actualizala; si no, creala con horas encadenadas hacia atrás desde ahora). 2) Las tareas PENDIENTES de hoy que ya no tienen sentido o quedaron obsoletas, sacalas con op 'borrar' (solo si están 'Pendientes' y no son eventos; JAMÁS borres ni cambies tareas 'Hecho'). 3) Las pendientes que siguen valiendo, reubicalas con op 'actualizar' cambiando inicio y fin. 4) Creá las tareas nuevas que falten, contiguas desde ahora hasta ~23:30, priorizando lo más importante por los parciales para maximizar productividad. 5) Si dice que NO fue a algo fijo (ej. no cursó) NO lo marques Hecho ni lo borres: dejalo pendiente y avisale en la respuesta que a las 23:59 va a quedar penalizado, y que si quiere sacarlo se lo pida. 6) La respuesta resume el nuevo plan por bloques con horas.",
     "- HÁBITOS DIARIOS (se penalizan a las 23:59 si no se hacen; incluilos SIEMPRE al armar cualquier día): Ejercicio (60 min, habilidad Ejercicio; cuenta gimnasio, bicicleta, correr o cualquier ejercicio, todos los días; si dice que no pudo ir al gimnasio, NO lo marques hecho: queda penalizado salvo que haga otro ejercicio ese día), Lectura (30 min, habilidad Lectura), Estudiar Inversiones (15 min, habilidad Finanzas), Marca Personal (30 min, habilidad Marca Personal) y Meditar (7 min, habilidad Espiritual). Estudio (clases, grupos de estudio, estudio individual, consultas) y Trabajo (negocio y agencia) NO se penalizan por horas no cumplidas: si hizo menos de lo planeado, solo ajustá o sacá las pendientes y mencionalo.",
+    "- TRABAJO (todo lo del negocio y la agencia: grabar videos, hablar con clientes, WhatsApp, paneles, investigar, etc.): NO crees una tarea por actividad. Usá op 'sumar' con {\"op\":\"sumar\",\"min\":MINUTOS,\"detalle\":\"lo que hizo, literal y breve\"}: el sistema suma los minutos a la tarea 'Trabajo Diario' de hoy (queda en Hecho) y guarda el detalle en su descripción. Una acción 'sumar' por cada actividad que cuente (ej. 'media hora grabando videos y 20 min con clientes' = dos acciones: 30 min 'grabar videos' y 20 min 'hablar con clientes'). Al planificar, el trabajo del día es UNA sola tarea 'Trabajo Diario' con la duración total planificada. El campo 'd' de cada tarea trae el detalle ya registrado: usalo para el análisis (comparar lo que dijo que hizo con los minutos).",
     "- DESHACER / CORREGIR: si Manu dice que se equivocó o pide volver una tarea atrás ('volvela a pendientes', 'todavía no terminé', 'no estaba en progreso'), actualizá esa tarea (op 'actualizar') al estado pedido ('Pendientes' o 'En progreso'), aunque estuviera 'Hecho'; al volver a Pendientes o En progreso deja de contar como completada. Esto aplica siempre que él lo pida explícitamente; la regla de no tocar tareas 'Hecho' es solo para cuando reorganizás por tu cuenta.",
     "- REGLA CRÍTICA: nunca muevas a otro día una tarea que ya está cargada para HOY (ni reutilices las plantillas de hoy para armar mañana). Para armar un día futuro, mirá PRÓXIMOS DÍAS: reutilizá solo las tareas que YA están en ese día; todo lo demás creálo nuevo con op 'crear'. Mover una tarea de hoy a otro día solo si Manu lo pide explícitamente ('pasá X para mañana').",
     "- Nombres de tareas: sin día de la semana (ej. 'Cursada Física', no 'Cursada Física Miércoles'): si reutilizás una plantilla de otro día, renombrala. En la respuesta SIEMPRE listá el plan completo por bloques con hora de inicio y fin, incluyendo hábitos, y no digas 'quedó todo armado' si faltó algo.",
     "- Si pide organizar un día futuro, devolvé TODAS las tareas de ese día con inicio y fin (formato AAAA-MM-DDTHH:MM), contiguas y sin superponerse, desde las 7:00 hasta ~23:30, y en la respuesta resumí el plan por bloques con horas.",
     "- Metas de referencia: ~7 h diarias entre estudio y trabajo. Parciales: Cálculo y Organizaciones 24/11, Informática 27/11, Física 30/11.",
-    "FORMATO: {\"transcripcion\":\"\",\"acciones\":[{\"op\":\"crear|actualizar|borrar\",\"id\":\"solo para actualizar/borrar\",\"nombre\":\"\",\"habilidad\":\"\",\"min\":0,\"inicio\":\"AAAA-MM-DDTHH:MM\",\"fin\":\"AAAA-MM-DDTHH:MM\",\"estado\":\"Pendientes|En progreso|Hecho\",\"nota\":\"\"}],\"respuesta\":\"texto plano corto, sin markdown\"}"
+    "FORMATO: {\"transcripcion\":\"\",\"acciones\":[{\"op\":\"crear|actualizar|borrar|sumar\",\"detalle\":\"solo para sumar\",\"id\":\"solo para actualizar/borrar\",\"nombre\":\"\",\"habilidad\":\"\",\"min\":0,\"inicio\":\"AAAA-MM-DDTHH:MM\",\"fin\":\"AAAA-MM-DDTHH:MM\",\"estado\":\"Pendientes|En progreso|Hecho\",\"nota\":\"\"}],\"respuesta\":\"texto plano corto, sin markdown\"}"
   ].join("\n");
 }
 async function gemini(env, partes) {
@@ -247,7 +264,7 @@ async function procesar(env, msg) {
     }
     const r = await gemini(env, partes);
     const acc = (r.acciones || []).concat(completarHabitos(r.acciones, sem, hoy));
-    const log = await aplicarAcciones(env, acc, validos);
+    const log = await aplicarAcciones(env, acc, validos, sem, hoy);
     let out = "";
     if (audio && r.transcripcion) out += "🎙️ " + r.transcripcion + "\n\n";
     out += r.respuesta || "Listo.";
