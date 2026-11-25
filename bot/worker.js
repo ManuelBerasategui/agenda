@@ -354,6 +354,17 @@ export default {
       const r = await tg(env, "setWebhook", { url: url.origin + "/telegram", secret_token: env.WEBHOOK_SECRET, allowed_updates: ["message"] });
       return new Response(JSON.stringify(r), { headers: { "Content-Type": "application/json" } });
     }
+    if (url.pathname.startsWith("/test/")) {
+      if (url.searchParams.get("s") !== env.WEBHOOK_SECRET) return new Response("no", { status: 403 });
+      const hoy = fechaAR(new Date()); let out;
+      try {
+        if (url.pathname === "/test/habitos") out = { habitos_creados: await asegurarHabitos(env, hoy, 3) };
+        else if (url.pathname === "/test/resumen") { const t = await resumenSemanal(env); await decir(env, env.ALLOWED_CHAT_ID, t); out = { enviado_a_telegram: true }; }
+        else if (url.pathname === "/test/cierre") out = Object.assign({ aviso: "prueba: antes del " + PENALIZAR_DESDE + " no penaliza nada" }, await penalizarDia(env, hoy));
+        else out = { error: "usá /test/habitos, /test/resumen o /test/cierre" };
+      } catch (e) { out = { error: e.message }; }
+      return new Response(JSON.stringify(out, null, 1), { headers: { "Content-Type": "application/json; charset=utf-8" } });
+    }
     if (url.pathname === "/telegram" && req.method === "POST") {
       if (req.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.WEBHOOK_SECRET) return new Response("no", { status: 403 });
       const up = await req.json();
