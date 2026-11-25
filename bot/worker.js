@@ -15,7 +15,7 @@ const HAB = {
   "Marca Personal": "3b8dd23d-90e3-8044-a8be-d753d9a28e26"
 };
 const HAB_POR_ID = Object.fromEntries(Object.entries(HAB).map(([k, v]) => [v.replace(/-/g, ""), k]));
-const MODELOS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-flash-lite-latest", "gemini-flash-latest", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-pro"];
+const MODELOS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-flash-lite-latest", "gemini-flash-latest", "gemini-2.0-flash", "gemini-2.0-flash-lite"];
 const TZ = "-03:00";
 
 /* ---------- tiempo (Argentina, UTC-3 fijo) ---------- */
@@ -181,11 +181,14 @@ function prompt(hoy, ahora, tareasHoy, tareasSem, texto, hayAudio, proximas) {
 }
 async function gemini(env, partes) {
   let ultimo;
-  for (let ronda = 0; ronda < 4; ronda++) {
-  if (ronda) await new Promise((r) => setTimeout(r, 3500 * ronda));
+  const t0 = Date.now(), PRESUPUESTO = 17000;
+  for (let ronda = 0; ronda < 3; ronda++) {
+  if (ronda) await new Promise((r) => setTimeout(r, 2000 * ronda));
   let saturado = false;
   for (const m of MODELOS) {
-    const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 25000);
+    const restante = PRESUPUESTO - (Date.now() - t0);
+    if (restante < 3000) { ultimo = ultimo || new Error("Gemini tardó demasiado"); break; }
+    const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), Math.min(12000, restante));
     try {
       const gc = { responseMimeType: "application/json", temperature: 0.3, maxOutputTokens: 8192 };
       if (/2\.5/.test(m)) gc.thinkingConfig = { thinkingBudget: 0 }; else gc.thinkingConfig = { thinkingLevel: "low" };
@@ -202,7 +205,7 @@ async function gemini(env, partes) {
       return parseJSON(out);
     } catch (e) { if (e.fatal) throw e; ultimo = e; } finally { clearTimeout(t); }
   }
-  if (!saturado) break;
+  if (!saturado || Date.now() - t0 > PRESUPUESTO - 3000) break;
   }
   throw ultimo || new Error("Gemini no respondió");
 }
