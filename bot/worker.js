@@ -85,6 +85,7 @@ function propsDe(a) {
 }
 async function aplicarAcciones(env, acciones, validos, sem, hoy) {
   const log = [];
+  const usados = {};
   for (const a of acciones || []) {
     try {
       if (a.estado && ["Pendientes", "En progreso", "Hecho"].indexOf(a.estado) < 0) a.estado = "";
@@ -93,7 +94,10 @@ async function aplicarAcciones(env, acciones, validos, sem, hoy) {
         if (!(min > 0)) { log.push("saltée una suma sin minutos"); continue; }
         const nombre = a.nombre || "Trabajo Diario", hab = HAB[a.habilidad] ? a.habilidad : "Trabajo", fecha = hoy, linea = horaAR(new Date()) + " · " + (a.detalle || "trabajo") + " (" + min + " min)";
         const cs = (sem || []).filter((t) => t.nombre === nombre && t.inicio && t.inicio.slice(0, 10) === fecha).sort((x, y) => (x.inicio < y.inicio ? -1 : 1));
-        let c = cs.find((t) => !t.hecho) || cs[cs.length - 1];
+        const ahoraMs = Date.now(), pend = cs.filter((t) => !t.hecho && t.inicio).sort((x, y) => Math.abs(Date.parse(x.inicio) - ahoraMs) - Math.abs(Date.parse(y.inicio) - ahoraMs));
+        usados[nombre] = usados[nombre] || null;
+        let c = usados[nombre] || pend[0] || cs[cs.length - 1];
+        usados[nombre] = c || null;
         if (c) {
           const total = (c.hecho ? (c.min || 0) : 0) + min, desc = ((c.desc ? c.desc + "\n" : "") + linea).slice(-1900);
           await notion(env, "pages/" + c.id, "PATCH", { properties: { "Duración (min)": { number: total }, "Estado": { status: { name: "Hecho" } }, "Completado": { checkbox: true }, "Descripción": { rich_text: [{ text: { content: desc } }] } } });
@@ -101,7 +105,7 @@ async function aplicarAcciones(env, acciones, validos, sem, hoy) {
           log.push("sumé " + min + " min a " + nombre + " (total " + total + ")");
         } else {
           const pg = await notion(env, "pages", "POST", { parent: { database_id: DB }, properties: { "Nombre": { title: [{ text: { content: nombre } }] }, "Habilidad": { relation: [{ id: HAB[hab] }] }, "Duración (min)": { number: min }, "Fecha Inicio": { date: { start: fecha } }, "Fecha Fin": { date: { start: fecha } }, "Estado": { status: { name: "Hecho" } }, "Completado": { checkbox: true }, "Descripción": { rich_text: [{ text: { content: linea } }] } } });
-          (sem || []).push({ id: pg.id, nombre, hecho: true, min, desc: linea, inicio: fecha, habilidad: hab });
+          const nuevo = { id: pg.id, nombre, hecho: true, min, desc: linea, inicio: fecha, habilidad: hab }; (sem || []).push(nuevo); usados[nombre] = nuevo;
           log.push("creé " + nombre + " con " + min + " min");
         }
       } else if (a.op === "crear") {
