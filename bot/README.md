@@ -13,3 +13,6 @@ Un solo archivo: `worker.js` (Cloudflare Worker). No tiene ningún secreto adent
 4. Abrí en el navegador `https://TU-WORKER.workers.dev/setup?s=TU_WEBHOOK_SECRET` → tiene que decir `"ok":true`.
 5. Escribile algo al bot. Te va a decir tu ID de Telegram → cargalo como secret `ALLOWED_CHAT_ID` → Deploy.
 6. En Notion: página RPG → ··· → Conexiones → agregá tu integración.
+7. Programar los avisos automáticos: tu Worker → Settings → **Triggers** → Cron Triggers → Add, dos veces:
+   - `59 2 * * *` (cierre del día a las 23:59 de Argentina: penaliza lo que no hiciste)
+   - `0 1 * * 1` (resumen semanal: domingo 22:00 de Argentina)

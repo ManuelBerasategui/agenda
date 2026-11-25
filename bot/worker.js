@@ -50,7 +50,9 @@ function leerTarea(p) {
     estado: pr["Estado"] && pr["Estado"].status ? pr["Estado"].status.name : "",
     inicio: pr["Fecha Inicio"] && pr["Fecha Inicio"].date ? pr["Fecha Inicio"].date.start : null,
     fin: pr["Fecha Fin"] && pr["Fecha Fin"].date ? pr["Fecha Fin"].date.start : null,
-    evento: !!(pr["Es evento"] && pr["Es evento"].checkbox)
+    evento: !!(pr["Es evento"] && pr["Es evento"].checkbox),
+    pen: !!(pr["Penalizado"] && pr["Penalizado"].checkbox),
+    perdidos: pr["Puntos perdidos"] ? pr["Puntos perdidos"].number : null
   };
 }
 async function tareasDesde(env, desde, hasta) {
@@ -75,6 +77,8 @@ function propsDe(a) {
   if (a.fin) { p["Fecha Fin"] = { date: { start: fechaNotion(a.fin) } }; }
   if (a.estado) { p["Estado"] = { status: { name: a.estado } }; if (a.estado === "Hecho") p["Completado"] = { checkbox: true }; }
   if (a.estado === "Pendientes" || a.estado === "En progreso") p["Completado"] = { checkbox: false };
+  if (a.penalizado) { p["Penalizado"] = { checkbox: true }; }
+  if (a.perdidos != null) p["Puntos perdidos"] = { number: Math.max(0, Math.round(+a.perdidos)) };
   if (a.nota) p["Descripción"] = { rich_text: [{ text: { content: String(a.nota).slice(0, 1900) } }] };
   return p;
 }
@@ -106,7 +110,13 @@ function resumen(tareas, hoy) {
     const d = t.inicio.slice(0, 10); porDia[d] = porDia[d] || {};
     const h = t.habilidad || "?"; porDia[d][h] = (porDia[d][h] || 0) + (t.min || 0);
   });
-  return Object.keys(porDia).sort().map((d) => ({ dia: d, min_hechos_por_habilidad: porDia[d] }));
+  const perd = {};
+  tareas.filter((t) => t.pen && t.inicio).forEach((t) => {
+    const d = t.inicio.slice(0, 10); perd[d] = perd[d] || { puntos: 0, tareas: [] };
+    perd[d].puntos += t.perdidos || 0; perd[d].tareas.push(t.nombre);
+  });
+  const dias = Array.from(new Set(Object.keys(porDia).concat(Object.keys(perd)))).sort();
+  return dias.map((d) => ({ dia: d, min_hechos_por_habilidad: porDia[d] || {}, penalizadas: perd[d] || null }));
 }
 
 /* ---------- Gemini ---------- */
@@ -118,7 +128,7 @@ function prompt(hoy, ahora, tareasHoy, tareasSem, texto, hayAudio) {
     hayAudio ? "El mensaje de Manu es el AUDIO adjunto (puede tener muletillas y errores de transcripción; interpretá con sentido común). Ponelo en 'transcripcion'." : "MENSAJE DE MANU: " + texto,
     "HABILIDADES VÁLIDAS: " + Object.keys(HAB).join(", ") + ".",
     "TAREAS DE HOY (id, n=nombre, h=habilidad, min=duración, ok=completada, est=estado, ini/fin): " + JSON.stringify(tareasHoy.map(comp)),
-    "MINUTOS COMPLETADOS POR DÍA Y HABILIDAD (últimos 7 días): " + JSON.stringify(resumen(tareasSem, hoy)),
+    "MINUTOS COMPLETADOS Y TAREAS PENALIZADAS (no hechas a las 23:59; puntos perdidos = minutos x 3) POR DÍA (últimos 7 días): " + JSON.stringify(resumen(tareasSem, hoy)),
     "PENDIENTES ATRASADAS (no completadas, de días anteriores): " + JSON.stringify(tareasSem.filter((t) => !t.hecho && !t.evento && t.inicio && t.inicio.slice(0, 10) < hoy).slice(-30).map(comp)),
     "TAREAS DE LA SEMANA (resumen): " + JSON.stringify(tareasSem.filter((t) => t.inicio && t.inicio.slice(0, 10) !== hoy).slice(-60).map(comp)),
     "",
@@ -207,7 +217,56 @@ async function procesar(env, msg) {
   }
 }
 
+/* ---------- Tareas programadas ---------- */
+async function penalizarDia(env, fecha) {
+  const j = await notion(env, "databases/" + DB + "/query", "POST", {
+    page_size: 100,
+    filter: { and: [
+      { property: "Fecha Inicio", date: { on_or_after: fecha } }, { property: "Fecha Inicio", date: { before: sumarDias(fecha, 1) } },
+      { property: "Completado", checkbox: { equals: false } }, { property: "Penalizado", checkbox: { equals: false } }, { property: "Es evento", checkbox: { equals: false } }
+    ] }
+  });
+  let n = 0, pts = 0;
+  for (const p of j.results) {
+    const t = leerTarea(p), perdidos = (t.min == null ? 30 : t.min) * 3;
+    try { await notion(env, "pages/" + t.id, "PATCH", { properties: { "Penalizado": { checkbox: true }, "Puntos perdidos": { number: perdidos } } }); n++; pts += perdidos; } catch (e) {}
+  }
+  return { n, pts };
+}
+async function resumenSemanal(env) {
+  const hoy = fechaAR(new Date()), desde = sumarDias(hoy, -6);
+  const ts = await tareasDesde(env, desde, hoy);
+  const xp = {}, perdidos = {}, tareasPerdidas = [];
+  ts.forEach((t) => {
+    const h = t.habilidad || "?";
+    if (t.hecho) xp[h] = (xp[h] || 0) + (t.min || 0) * 3;
+    if (t.pen) { perdidos[h] = (perdidos[h] || 0) + (t.perdidos || 0); tareasPerdidas.push(t.nombre + " (" + (t.inicio || "").slice(5, 10) + ")"); }
+  });
+  const totXP = Object.values(xp).reduce((a, b) => a + b, 0), totP = Object.values(perdidos).reduce((a, b) => a + b, 0);
+  const datos = { desde, hasta: hoy, xp_ganado_aprox_por_habilidad: xp, total_xp: totXP, puntos_perdidos_por_habilidad: perdidos, total_puntos_perdidos: totP, tareas_no_hechas: tareasPerdidas.slice(0, 25), min_hechos_por_dia: resumen(ts, hoy) };
+  let analisis = "";
+  try {
+    const r = await gemini(env, [{ text: "Sos el agente de Manu (rioplatense, directo). Escribí el resumen semanal en texto plano, sin markdown, máx 12 líneas: cuánto XP ganó, cuántos puntos perdió, en qué habilidad más, qué tareas no hizo, un diagnóstico honesto (¿se dedicó a lo importante? ¿hubo parciales esta semana? Cálculo y Organizaciones 24/11, Informática 27/11, Física 30/11) y 2 cosas concretas para mejorar la próxima semana. No inventes. Datos: " + JSON.stringify(datos) + '\nRespondé JSON: {"respuesta":""}' }]);
+    analisis = r.respuesta || "";
+  } catch (e) {}
+  if (!analisis) analisis = "XP ganado: " + totXP + ". Puntos perdidos: " + totP + ". No hechas: " + (tareasPerdidas.join(", ") || "ninguna") + ".";
+  return "📊 Resumen de la semana (" + desde + " a " + hoy + ")\nXP ganado: " + totXP + " · Puntos perdidos: " + totP + "\n\n" + analisis;
+}
+
 export default {
+  async scheduled(event, env, ctx) {
+    if (!env.ALLOWED_CHAT_ID) return;
+    ctx.waitUntil((async () => {
+      try {
+        if (event.cron === "59 2 * * *") {
+          const r = await penalizarDia(env, fechaAR(new Date(Date.now() - 10 * 60e3)));
+          if (r.n) await decir(env, env.ALLOWED_CHAT_ID, "⏰ Cierre del día: " + r.n + " tarea(s) sin hacer quedaron penalizadas (" + r.pts + " puntos perdidos).");
+        } else if (event.cron === "0 1 * * 1") {
+          await decir(env, env.ALLOWED_CHAT_ID, await resumenSemanal(env));
+        }
+      } catch (e) { await decir(env, env.ALLOWED_CHAT_ID, "No pude hacer el cierre automático: " + e.message); }
+    })());
+  },
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
     if (url.pathname === "/setup") {
