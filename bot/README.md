@@ -15,4 +15,5 @@ Un solo archivo: `worker.js` (Cloudflare Worker). No tiene ningún secreto adent
 6. En Notion: página RPG → ··· → Conexiones → agregá tu integración.
 7. Programar los avisos automáticos: tu Worker → Settings → **Triggers** → Cron Triggers → Add, dos veces:
    - `59 2 * * *` (cierre del día a las 23:59 de Argentina: penaliza lo que no hiciste)
+   - `0 9 * * *` (cada día a las 06:00 de Argentina: crea los hábitos de hoy y de los 2 días siguientes)
    - `0 1 * * 1` (resumen semanal: domingo 22:00 de Argentina)

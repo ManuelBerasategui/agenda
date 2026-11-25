@@ -284,6 +284,29 @@ async function penalizarDia(env, fecha) {
   const plan = t.reduce((a, x) => a + (x.min || 0), 0), hecho = t.filter((x) => x.hecho).reduce((a, x) => a + (x.min || 0), 0);
   return { n, pts, lista, plan, hecho };
 }
+
+/* Cada mañana deja creados los hábitos de hoy y de los 2 días siguientes (los que falten) */
+async function asegurarHabitos(env, desdeFecha, dias) {
+  let creados = 0;
+  for (let i = 0; i < dias; i++) {
+    const d = sumarDias(desdeFecha, i);
+    const ts = (await tareasDesde(env, d, d)).filter((t) => t.inicio && t.inicio.slice(0, 10) === d);
+    const ocupado = [];
+    ts.forEach((t) => { if (t.inicio.length > 10 && t.fin && t.fin.length > 10) ocupado.push([mm(t.inicio.slice(11, 16)), mm(t.fin.slice(11, 16))]); });
+    for (const h of Object.keys(HABITOS)) {
+      if (ts.some((t) => t.habilidad === h)) continue;
+      const dur = HABITOS[h];
+      for (let t = 7 * 60; t + dur <= 23 * 60 + 30; t += 5) {
+        if (ocupado.every((o) => t + dur <= o[0] || t >= o[1])) {
+          await notion(env, "pages", "POST", { parent: { database_id: DB }, properties: propsDe({ nombre: NOMBRE_HABITO[h], habilidad: h, min: dur, inicio: d + "T" + hh(t), fin: d + "T" + hh(t + dur), estado: "Pendientes" }) });
+          ocupado.push([t, t + dur]); creados++; break;
+        }
+      }
+    }
+  }
+  return creados;
+}
+
 async function resumenSemanal(env) {
   const hoy = fechaAR(new Date()), desde = sumarDias(hoy, -6);
   const ts = await tareasDesde(env, desde, hoy);
@@ -316,6 +339,8 @@ export default {
           m += r.n ? "hábitos sin cumplir: " + r.lista.join(", ") + " (" + r.pts + " puntos perdidos)." : "cumpliste todos tus hábitos, sin penalización.";
           if (r.plan) m += "\nEstudio y trabajo: hiciste " + Math.round(r.hecho / 6) / 10 + " h de " + Math.round(r.plan / 6) / 10 + " h planificadas (esto no penaliza).";
           await decir(env, env.ALLOWED_CHAT_ID, m);
+        } else if (event.cron === "0 9 * * *") {
+          await asegurarHabitos(env, fechaAR(new Date()), 3);
         } else if (event.cron === "0 1 * * 1") {
           await decir(env, env.ALLOWED_CHAT_ID, await resumenSemanal(env));
         }
