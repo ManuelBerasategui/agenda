@@ -146,6 +146,7 @@ function prompt(hoy, ahora, tareasHoy, tareasSem, texto, hayAudio, proximas) {
     "- Hábitos diarios a incluir: lectura (10-15 min, mañana/mediodía/noche), inversiones 15 min (Finanzas), LinkedIn/Marca Personal 20 min, ejercicio (gimnasio o bici), meditar. Comidas máx 40 min (almuerzo ~13:00, merienda ~17:00, cena ~21:00), siesta 20 min opcional. El gimnasio cierra jueves 21:30 y sábado 13:00: si dice que va al gimnasio, ponelo antes del cierre.",
     "- REPROGRAMAR a mitad del día ('al final estudié X horas', 'no cursé', 'reorganizame todo'): 1) registrá lo que hizo como tareas reales con minutos reales y estado 'Hecho' (si ya existe la tarea de hoy, actualizala; si no, creala con horas encadenadas hacia atrás desde ahora). 2) Las tareas PENDIENTES de hoy que ya no tienen sentido o quedaron obsoletas, sacalas con op 'borrar' (solo si están 'Pendientes' y no son eventos; JAMÁS borres ni cambies tareas 'Hecho'). 3) Las pendientes que siguen valiendo, reubicalas con op 'actualizar' cambiando inicio y fin. 4) Creá las tareas nuevas que falten, contiguas desde ahora hasta ~23:30, priorizando lo más importante por los parciales para maximizar productividad. 5) Si dice que NO fue a algo fijo (ej. no cursó) NO lo marques Hecho ni lo borres: dejalo pendiente y avisale en la respuesta que a las 23:59 va a quedar penalizado, y que si quiere sacarlo se lo pida. 6) La respuesta resume el nuevo plan por bloques con horas.",
     "- HÁBITOS DIARIOS (se penalizan a las 23:59 si no se hacen; incluilos SIEMPRE al armar cualquier día): Ejercicio (60 min, habilidad Ejercicio; cuenta gimnasio, bicicleta, correr o cualquier ejercicio, todos los días; si dice que no pudo ir al gimnasio, NO lo marques hecho: queda penalizado salvo que haga otro ejercicio ese día), Lectura (30 min, habilidad Lectura), Estudiar Inversiones (15 min, habilidad Finanzas), Marca Personal (30 min, habilidad Marca Personal) y Meditar (7 min, habilidad Espiritual). Estudio (clases, grupos de estudio, estudio individual, consultas) y Trabajo (negocio y agencia) NO se penalizan por horas no cumplidas: si hizo menos de lo planeado, solo ajustá o sacá las pendientes y mencionalo.",
+    "- Nombres de tareas: sin día de la semana (ej. 'Cursada Física', no 'Cursada Física Miércoles'): si reutilizás una plantilla de otro día, renombrala. En la respuesta SIEMPRE listá el plan completo por bloques con hora de inicio y fin, incluyendo hábitos, y no digas 'quedó todo armado' si faltó algo.",
     "- Si pide organizar un día futuro, devolvé TODAS las tareas de ese día con inicio y fin (formato AAAA-MM-DDTHH:MM), contiguas y sin superponerse, desde las 7:00 hasta ~23:30, y en la respuesta resumí el plan por bloques con horas.",
     "- Metas de referencia: ~7 h diarias entre estudio y trabajo. Parciales: Cálculo y Organizaciones 24/11, Informática 27/11, Física 30/11.",
     "FORMATO: {\"transcripcion\":\"\",\"acciones\":[{\"op\":\"crear|actualizar|borrar\",\"id\":\"solo para actualizar/borrar\",\"nombre\":\"\",\"habilidad\":\"\",\"min\":0,\"inicio\":\"AAAA-MM-DDTHH:MM\",\"fin\":\"AAAA-MM-DDTHH:MM\",\"estado\":\"Pendientes|En progreso|Hecho\",\"nota\":\"\"}],\"respuesta\":\"texto plano corto, sin markdown\"}"
@@ -181,6 +182,38 @@ function parseJSON(s) {
 }
 function b64(buf) { let s = "", u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); }
 
+
+/* Garantiza que cada día planificado tenga los 5 hábitos: si Gemini se olvidó alguno, lo agrega en un hueco libre */
+const mm = (hhmm) => parseInt(hhmm.slice(0, 2), 10) * 60 + parseInt(hhmm.slice(3, 5), 10);
+const hh = (m) => pad(Math.floor(m / 60)) + ":" + pad(m % 60);
+function completarHabitos(acciones, sem, hoy) {
+  const extra = [], dias = {};
+  (acciones || []).forEach((a) => { if (a.op === "crear" && a.inicio && a.inicio.length >= 16 && a.estado !== "Hecho") dias[a.inicio.slice(0, 10)] = 1; });
+  Object.keys(dias).forEach((d) => {
+    if (d < hoy) return;
+    const nombresAcc = (acciones || []).filter((a) => a.op !== "borrar" && a.inicio && a.inicio.slice(0, 10) === d).map((a) => a.habilidad || "");
+    const borrados = new Set((acciones || []).filter((a) => a.op === "borrar").map((a) => a.id));
+    const existentes = sem.filter((t) => t.inicio && t.inicio.slice(0, 10) === d && !borrados.has(t.id));
+    const tieneH = (h) => nombresAcc.indexOf(h) >= 0 || existentes.some((t) => t.habilidad === h);
+    const ocupado = [];
+    existentes.forEach((t) => { if (t.inicio.length > 10 && t.fin && t.fin.length > 10) ocupado.push([mm(t.inicio.slice(11, 16)), mm(t.fin.slice(11, 16))]); });
+    (acciones || []).forEach((a) => { if (a.op !== "borrar" && a.inicio && a.fin && a.inicio.slice(0, 10) === d && a.fin.length >= 16) ocupado.push([mm(a.inicio.slice(11, 16)), mm(a.fin.slice(11, 16)) || 1440]); });
+    const ahoraMin = d === hoy ? 0 : 0;
+    Object.keys(HABITOS).forEach((h) => {
+      if (tieneH(h)) return;
+      const dur = HABITOS[h];
+      for (let t = 7 * 60; t + dur <= 23 * 60 + 30; t += 5) {
+        if (t < ahoraMin) continue;
+        if (ocupado.every((o) => t + dur <= o[0] || t >= o[1])) {
+          extra.push({ op: "crear", nombre: NOMBRE_HABITO[h], habilidad: h, min: dur, inicio: d + "T" + hh(t), fin: d + "T" + hh(t + dur), estado: "Pendientes" });
+          ocupado.push([t, t + dur]); return;
+        }
+      }
+    });
+  });
+  return extra;
+}
+
 /* ---------- Telegram ---------- */
 async function tg(env, metodo, body) {
   const r = await fetch("https://api.telegram.org/bot" + env.TELEGRAM_TOKEN + "/" + metodo, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -211,7 +244,8 @@ async function procesar(env, msg) {
       partes.push({ inlineData: { mimeType: mime, data: b64(buf) } });
     }
     const r = await gemini(env, partes);
-    const log = await aplicarAcciones(env, r.acciones, validos);
+    const acc = (r.acciones || []).concat(completarHabitos(r.acciones, sem, hoy));
+    const log = await aplicarAcciones(env, acc, validos);
     let out = "";
     if (audio && r.transcripcion) out += "🎙️ " + r.transcripcion + "\n\n";
     out += r.respuesta || "Listo.";
