@@ -86,6 +86,7 @@ function propsDe(a) {
 }
 async function aplicarAcciones(env, acciones, validos, sem, hoy) {
   const log = [];
+  log.tocados = new Set();
   const usados = {};
   for (const a of acciones || []) {
     try {
@@ -113,10 +114,12 @@ async function aplicarAcciones(env, acciones, validos, sem, hoy) {
         }
       } else if (a.op === "crear") {
         if (!a.nombre || ((!a.habilidad || !HAB[a.habilidad]) && !/almuerzo|cena|merienda|desayuno|siesta|pausa|descanso|colaci/i.test(a.nombre))) { log.push("saltée una tarea sin nombre o habilidad válida"); continue; }
-        await notion(env, "pages", "POST", { parent: { database_id: DB }, properties: propsDe(a) });
+        const pgc = await notion(env, "pages", "POST", { parent: { database_id: DB }, properties: propsDe(a) });
+        if (a.inicio && pgc && pgc.id) log.tocados.add(pgc.id);
         log.push("creé " + a.nombre);
       } else if (a.op === "actualizar" && a.id && validos.has(a.id)) {
         await notion(env, "pages/" + a.id, "PATCH", { properties: propsDe(a) });
+        if (a.inicio) log.tocados.add(a.id);
         log.push("actualicé " + (a.nombre || a.id));
       } else if (a.op === "borrar" && a.id && validos.has(a.id)) {
         await notion(env, "pages/" + a.id, "PATCH", { archived: true });
@@ -262,10 +265,10 @@ async function tg(env, metodo, body) {
 const decir = (env, chat, texto) => tg(env, "sendMessage", { chat_id: chat, text: String(texto).slice(0, 4000) });
 
 /* Reacomoda los bloques pendientes de hoy para que no se superpongan: respeta lo hecho, lo en progreso y lo fijo (cursada, gimnasio, parcial, consultas) y corre el resto al siguiente hueco libre, sin cambiar duraciones. */
-async function reacomodar(env, hoy) {
+async function reacomodar(env, hoy, tocados) {
   const ahora = Date.now(), cinco = 5 * 60e3, finDia = Date.parse(hoy + "T23:59:00" + TZ);
   const ts = (await tareasDesde(env, hoy, hoy)).filter((t) => t.inicio && t.inicio.length > 10 && t.fin && t.inicio.slice(0, 10) === hoy && !t.evento);
-  const fijo = (t) => t.hecho || t.estado === "En progreso" || /cursada|gimnasio|ejercicio|parcial|consulta|clase|sue[ñn]o/i.test(t.nombre);
+  const fijo = (t) => (tocados && tocados.has(t.id)) || t.hecho || t.estado === "En progreso" || /cursada|gimnasio|ejercicio|parcial|consulta|clase|sue[ñn]o/i.test(t.nombre);
   const placed = [];
   ts.filter(fijo).forEach((t) => placed.push([Date.parse(t.inicio), Math.max(Date.parse(t.fin), t.estado === "En progreso" && t.min ? Date.parse(t.inicio) + t.min * 60e3 : 0)]));
   const movibles = ts.filter((t) => !fijo(t)).sort((a, b) => Date.parse(a.inicio) - Date.parse(b.inicio));
@@ -335,7 +338,7 @@ async function procesar(env, msg) {
     const acc = (r.acciones || []).concat(completarHabitos(r.acciones, sem, hoy));
     const log = await aplicarAcciones(env, acc, validos, sem, hoy);
     let movidos = [];
-    if (acc.length) { try { movidos = await reacomodar(env, hoy); } catch (e) { log.push("falló el reacomodo: " + e.message); } }
+    if (acc.length) { try { movidos = await reacomodar(env, hoy, log.tocados); } catch (e) { log.push("falló el reacomodo: " + e.message); } }
     let out = "";
     if (audio && r.transcripcion) out += "🎙️ " + r.transcripcion + "\n\n";
     out += r.respuesta || "Listo.";
