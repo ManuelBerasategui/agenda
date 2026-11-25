@@ -208,9 +208,10 @@ async function gemini(env, partes) {
   }
   if (!saturado || Date.now() - t0 > PRESUPUESTO - 3000) break;
   }
-  const fin = ultimo || new Error("Gemini no respondió");
-  if (satur || /aborted|tardó/i.test(String(fin.message))) fin.sat = true;
-  if (satur && !/503|429|5\d\d/.test(fin.message)) fin.message = "Gemini 503";
+  const base = ultimo || new Error("Gemini no respondió");
+  const msg0 = String(base.message || base);
+  const fin = new Error(satur && !/\b(429|5\d\d)\b/.test(msg0) ? "Gemini 503" : /aborted/i.test(msg0) ? "Gemini tardó demasiado" : msg0);
+  if (satur || /aborted|tardó/i.test(msg0)) fin.sat = true;
   throw fin;
 }
 function parseJSON(s) {
