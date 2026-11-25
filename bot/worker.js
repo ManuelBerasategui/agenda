@@ -335,6 +335,14 @@ async function resumenSemanal(env) {
     if (t.hecho) xp[h] = (xp[h] || 0) + (t.min || 0) * 3;
     if (t.pen) { perdidos[h] = (perdidos[h] || 0) + (t.perdidos || 0); tareasPerdidas.push(t.nombre + " (" + (t.inicio || "").slice(5, 10) + ")"); }
   });
+  const sueno = {};
+  ts.forEach((t) => { if (t.habilidad === "Sueño" && t.hecho && t.min > 0 && t.inicio) { const d = t.inicio.slice(0, 10); sueno[d] = (sueno[d] || 0) + t.min; } });
+  const sd = Object.keys(sueno).sort(), hs = (m) => Math.round(m / 6) / 10 + " h";
+  let lineaSueno = "";
+  if (sd.length) {
+    const prom = sd.reduce((a, d) => a + sueno[d], 0) / sd.length, mas = sd.reduce((a, d) => (sueno[d] > sueno[a] ? d : a)), menos = sd.reduce((a, d) => (sueno[d] < sueno[a] ? d : a));
+    lineaSueno = "\n😴 Sueño: promedio " + hs(prom) + " por día (" + sd.length + " días registrados). Más dormiste: " + mas.slice(5) + " con " + hs(sueno[mas]) + ". Menos dormiste: " + menos.slice(5) + " con " + hs(sueno[menos]) + ".";
+  }
   const totXP = Object.values(xp).reduce((a, b) => a + b, 0), totP = Object.values(perdidos).reduce((a, b) => a + b, 0);
   const datos = { desde, hasta: hoy, xp_ganado_aprox_por_habilidad: xp, total_xp: totXP, puntos_perdidos_por_habilidad: perdidos, total_puntos_perdidos: totP, tareas_no_hechas: tareasPerdidas.slice(0, 25), min_hechos_por_dia: resumen(ts, hoy) };
   let analisis = "";
@@ -343,7 +351,7 @@ async function resumenSemanal(env) {
     analisis = r.respuesta || "";
   } catch (e) {}
   if (!analisis) analisis = "XP ganado: " + totXP + ". Puntos perdidos: " + totP + ". No hechas: " + (tareasPerdidas.join(", ") || "ninguna") + ".";
-  return "📊 Resumen de la semana (" + desde + " a " + hoy + ")\nXP ganado: " + totXP + " · Puntos perdidos: " + totP + "\n\n" + analisis;
+  return "📊 Resumen de la semana (" + desde + " a " + hoy + ")\nXP ganado: " + totXP + " · Puntos perdidos: " + totP + lineaSueno + "\n\n" + analisis;
 }
 
 export default {
