@@ -250,6 +250,31 @@ async function tg(env, metodo, body) {
 }
 const decir = (env, chat, texto) => tg(env, "sendMessage", { chat_id: chat, text: String(texto).slice(0, 4000) });
 
+/* Reacomoda los bloques pendientes de hoy para que no se superpongan: respeta lo hecho, lo en progreso y lo fijo (cursada, gimnasio, parcial, consultas) y corre el resto al siguiente hueco libre, sin cambiar duraciones. */
+async function reacomodar(env, hoy) {
+  const ahora = Date.now(), cinco = 5 * 60e3, finDia = Date.parse(hoy + "T23:59:00" + TZ);
+  const aISO = (ms) => new Date(ms - 3 * 3600e3).toISOString().slice(0, 16) + ":00" + TZ;
+  const ts = (await tareasDesde(env, hoy, hoy)).filter((t) => t.inicio && t.inicio.length > 10 && t.fin && t.inicio.slice(0, 10) === hoy && !t.evento);
+  const fijo = (t) => t.hecho || t.estado === "En progreso" || /cursada|gimnasio|ejercicio|parcial|consulta|clase|sue[ñn]o/i.test(t.nombre);
+  const placed = [];
+  ts.filter(fijo).forEach((t) => placed.push([Date.parse(t.inicio), Date.parse(t.fin)]));
+  const movibles = ts.filter((t) => !fijo(t)).sort((a, b) => Date.parse(a.inicio) - Date.parse(b.inicio));
+  const movidos = [];
+  for (const t of movibles) {
+    const s0 = Date.parse(t.inicio), e0 = Date.parse(t.fin), dur = e0 - s0;
+    if (!(dur > 0)) continue;
+    if (e0 <= ahora) { placed.push([s0, e0]); continue; }
+    let x = Math.max(s0, Math.ceil(ahora / cinco) * cinco), cambio = true;
+    while (cambio) { cambio = false; for (const [ps, pe] of placed) { if (x < pe && x + dur > ps) { x = pe; cambio = true; } } }
+    if (x + dur > finDia) { placed.push([s0, e0]); continue; }
+    placed.push([x, x + dur]);
+    if (x !== s0) {
+      await notion(env, "pages/" + t.id, "PATCH", { properties: { "Fecha Inicio": { date: { start: aISO(x) } }, "Fecha Fin": { date: { start: aISO(x + dur) } } } });
+      movidos.push(t.nombre + " → " + horaAR(new Date(x)));
+    }
+  }
+  return movidos;
+}
 async function procesar(env, msg) {
   const chat = msg.chat.id;
   if (!env.ALLOWED_CHAT_ID) { await decir(env, chat, "Tu ID de Telegram es " + chat + ". Cargalo en Cloudflare como ALLOWED_CHAT_ID y volvé a escribirme."); return; }
@@ -275,9 +300,12 @@ async function procesar(env, msg) {
     const r = await gemini(env, partes);
     const acc = (r.acciones || []).concat(completarHabitos(r.acciones, sem, hoy));
     const log = await aplicarAcciones(env, acc, validos, sem, hoy);
+    let movidos = [];
+    if (acc.length) { try { movidos = await reacomodar(env, hoy); } catch (e) { log.push("falló el reacomodo: " + e.message); } }
     let out = "";
     if (audio && r.transcripcion) out += "🎙️ " + r.transcripcion + "\n\n";
     out += r.respuesta || "Listo.";
+    if (movidos.length) out += "\n\n🔁 Reacomodé para que no se pisen: " + movidos.join(", ") + ".";
     const fallas = log.filter((l) => /falló|saltée|ignoré/.test(l));
     if (fallas.length) out += "\n\n⚠️ " + fallas.join("; ");
     await decir(env, chat, out);
