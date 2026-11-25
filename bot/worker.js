@@ -120,7 +120,7 @@ function resumen(tareas, hoy) {
 }
 
 /* ---------- Gemini ---------- */
-function prompt(hoy, ahora, tareasHoy, tareasSem, texto, hayAudio) {
+function prompt(hoy, ahora, tareasHoy, tareasSem, texto, hayAudio, proximas) {
   const comp = (t) => ({ id: t.id, n: t.nombre, h: t.habilidad, min: t.min, ok: t.hecho, est: t.estado, ini: t.inicio, fin: t.fin });
   return [
     "Sos el agente de Manu (estudiante en Argentina, UTC-3, habla en rioplatense). Maneja su RPG de Notion: cada tarea tiene una Habilidad y una duración real en minutos; al marcarla Hecho se le suma XP a la habilidad. Respondé SOLO JSON.",
@@ -129,6 +129,7 @@ function prompt(hoy, ahora, tareasHoy, tareasSem, texto, hayAudio) {
     "HABILIDADES VÁLIDAS: " + Object.keys(HAB).join(", ") + ".",
     "TAREAS DE HOY (id, n=nombre, h=habilidad, min=duración, ok=completada, est=estado, ini/fin): " + JSON.stringify(tareasHoy.map(comp)),
     "MINUTOS COMPLETADOS Y TAREAS PENALIZADAS (no hechas a las 23:59; puntos perdidos = minutos x 3) POR DÍA (últimos 7 días): " + JSON.stringify(resumen(tareasSem, hoy)),
+    "PRÓXIMOS DÍAS (ya cargados en Notion, incluyen plantillas como Cursada/Sueño; si coinciden con lo que pide, actualizalas en vez de duplicar): " + JSON.stringify((proximas || []).map(comp)),
     "PENDIENTES ATRASADAS (no completadas, de días anteriores): " + JSON.stringify(tareasSem.filter((t) => !t.hecho && !t.evento && t.inicio && t.inicio.slice(0, 10) < hoy).slice(-30).map(comp)),
     "TAREAS DE LA SEMANA (resumen): " + JSON.stringify(tareasSem.filter((t) => t.inicio && t.inicio.slice(0, 10) !== hoy).slice(-60).map(comp)),
     "",
@@ -141,6 +142,9 @@ function prompt(hoy, ahora, tareasHoy, tareasSem, texto, hayAudio) {
     "- Si pide armar el día o el resto del día: creá tareas 'Pendientes' con inicio y fin, contiguas, desde ahora hasta ~23:30, con estudio en bloques de 50 min con pausas de 5-10, trabajo en sprints de 40-45 min, comidas máx 40 min, siesta 20 opcional, hábitos (lectura, inversiones, LinkedIn/Marca Personal 20 min, ejercicio). Habilidades de descanso/comida: usá 'Sueño' solo para dormir; para comidas y pausas no crees tareas.",
     "- Para otro día ('mañana'), calculá la fecha y armalo igual.",
     "- Si pregunta cómo viene o pide análisis: respondé con los datos de arriba, comparando lo que dijo que hizo con los minutos registrados; señalá incoherencias (ej. 3 h de trabajo pero solo se nombró una tarea de 1 h), tiempo sin registrar, y qué mejorar. No inventes datos que no estén.",
+    "- Cuando arma un día: respetá clases fijas que diga (ponelas como tareas de 'Estudios' con sus horas exactas), luego repartí estudio según los parciales: más tiempo a la materia con parcial más cerca y más difícil (Cálculo > Informática > Física > Organizaciones). Estudio en bloques de 50 min con pausas de 5-10; trabajo (grabar videos, agencia, WhatsApp máx 10-30 min) en sprints de 40-45 min; alterná estudio y trabajo. Usá como referencia lo que suele hacer según el historial de arriba.",
+    "- Hábitos diarios a incluir: lectura (10-15 min, mañana/mediodía/noche), inversiones 15 min (Finanzas), LinkedIn/Marca Personal 20 min, ejercicio (gimnasio o bici), meditar. Comidas máx 40 min (almuerzo ~13:00, merienda ~17:00, cena ~21:00), siesta 20 min opcional. El gimnasio cierra jueves 21:30 y sábado 13:00: si dice que va al gimnasio, ponelo antes del cierre.",
+    "- Si pide organizar un día futuro, devolvé TODAS las tareas de ese día con inicio y fin (formato AAAA-MM-DDTHH:MM), contiguas y sin superponerse, desde las 7:00 hasta ~23:30, y en la respuesta resumí el plan por bloques con horas.",
     "- Metas de referencia: ~7 h diarias entre estudio y trabajo. Parciales: Cálculo y Organizaciones 24/11, Informática 27/11, Física 30/11.",
     "FORMATO: {\"transcripcion\":\"\",\"acciones\":[{\"op\":\"crear|actualizar|borrar\",\"id\":\"solo para actualizar/borrar\",\"nombre\":\"\",\"habilidad\":\"\",\"min\":0,\"inicio\":\"AAAA-MM-DDTHH:MM\",\"fin\":\"AAAA-MM-DDTHH:MM\",\"estado\":\"Pendientes|En progreso|Hecho\",\"nota\":\"\"}],\"respuesta\":\"texto plano corto, sin markdown\"}"
   ].join("\n");
@@ -196,7 +200,7 @@ async function procesar(env, msg) {
     const sem = await tareasDesde(env, sumarDias(hoy, -7), sumarDias(hoy, 7));
     const hoyT = sem.filter((t) => t.inicio && t.inicio.slice(0, 10) === hoy);
     const validos = new Set(sem.map((t) => t.id));
-    const partes = [{ text: prompt(hoy, ahora, hoyT, sem.filter((t) => t.inicio && t.inicio.slice(0, 10) <= hoy), texto, !!audio) }];
+    const partes = [{ text: prompt(hoy, ahora, hoyT, sem.filter((t) => t.inicio && t.inicio.slice(0, 10) <= hoy), texto, !!audio, sem.filter((t) => t.inicio && t.inicio.slice(0, 10) > hoy)) }];
     if (audio) {
       const f = await tg(env, "getFile", { file_id: audio.file_id });
       if (!f.ok) throw new Error("no pude bajar el audio");
