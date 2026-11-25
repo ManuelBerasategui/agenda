@@ -284,6 +284,22 @@ async function reacomodar(env, hoy) {
   }
   return movidos;
 }
+/* Plan B cuando Google está saturado: Cloudflare Workers AI (Whisper + Llama). Solo se usa si el Worker tiene el binding "AI". */
+async function conCloudflareAI(env, mkPrompt, texto, audioB64) {
+  let tx = texto, trans = "";
+  if (audioB64) {
+    const w = await env.AI.run("@cf/openai/whisper-large-v3-turbo", { audio: audioB64, language: "es" });
+    trans = (w && w.text ? w.text : "").trim();
+    if (!trans) throw new Error("no pude transcribir");
+    tx = trans;
+  }
+  const out = await env.AI.run("@cf/meta/llama-3.3-70b-instruct-fp8-fast", { messages: [{ role: "user", content: mkPrompt(tx, false) }], response_format: { type: "json_object" }, max_tokens: 4000, temperature: 0.2 });
+  const raw = out && out.response != null ? out.response : out;
+  const r = typeof raw === "string" ? parseJSON(raw) : raw;
+  if (trans && !r.transcripcion) r.transcripcion = trans;
+  r.respuesta = (r.respuesta || "Listo.") + " (usé el plan B porque Google estaba saturado)";
+  return r;
+}
 async function procesar(env, msg) {
   const chat = msg.chat.id;
   if (!env.ALLOWED_CHAT_ID) { await decir(env, chat, "Tu ID de Telegram es " + chat + ". Cargalo en Cloudflare como ALLOWED_CHAT_ID y volvé a escribirme."); return; }
@@ -298,15 +314,23 @@ async function procesar(env, msg) {
     const sem = await tareasDesde(env, sumarDias(hoy, -7), sumarDias(hoy, 7));
     const hoyT = sem.filter((t) => t.inicio && t.inicio.slice(0, 10) === hoy);
     const validos = new Set(sem.map((t) => t.id));
-    const partes = [{ text: prompt(hoy, ahora, hoyT, sem.filter((t) => t.inicio && t.inicio.slice(0, 10) <= hoy), texto, !!audio, sem.filter((t) => t.inicio && t.inicio.slice(0, 10) > hoy)) }];
+    const mkPrompt = (tx, hayAudio) => prompt(hoy, ahora, hoyT, sem.filter((t) => t.inicio && t.inicio.slice(0, 10) <= hoy), tx, hayAudio, sem.filter((t) => t.inicio && t.inicio.slice(0, 10) > hoy));
+    const partes = [{ text: mkPrompt(texto, !!audio) }];
+    let audioB64 = "";
     if (audio) {
       const f = await tg(env, "getFile", { file_id: audio.file_id });
       if (!f.ok) throw new Error("no pude bajar el audio");
       const buf = await (await fetch("https://api.telegram.org/file/bot" + env.TELEGRAM_TOKEN + "/" + f.result.file_path)).arrayBuffer();
       const mime = (audio.mime_type || "audio/ogg").replace(/;.*/, "");
-      partes.push({ inlineData: { mimeType: mime, data: b64(buf) } });
+      audioB64 = b64(buf);
+      partes.push({ inlineData: { mimeType: mime, data: audioB64 } });
     }
-    const r = await gemini(env, partes);
+    let r;
+    try { r = await gemini(env, partes); }
+    catch (e) {
+      if (!env.AI || !e.sat) throw e;
+      try { r = await conCloudflareAI(env, mkPrompt, texto, audioB64); } catch (e2) { throw e; }
+    }
     const acc = (r.acciones || []).concat(completarHabitos(r.acciones, sem, hoy));
     const log = await aplicarAcciones(env, acc, validos, sem, hoy);
     let movidos = [];
