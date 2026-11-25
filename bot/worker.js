@@ -145,6 +145,7 @@ function prompt(hoy, ahora, tareasHoy, tareasSem, texto, hayAudio, proximas) {
     "- Cuando arma un día: respetá clases fijas que diga (ponelas como tareas de 'Estudios' con sus horas exactas), luego repartí estudio según los parciales: más tiempo a la materia con parcial más cerca y más difícil (Cálculo > Informática > Física > Organizaciones). Estudio en bloques de 50 min con pausas de 5-10; trabajo (grabar videos, agencia, WhatsApp máx 10-30 min) en sprints de 40-45 min; alterná estudio y trabajo. Usá como referencia lo que suele hacer según el historial de arriba.",
     "- Hábitos diarios a incluir: lectura (10-15 min, mañana/mediodía/noche), inversiones 15 min (Finanzas), LinkedIn/Marca Personal 20 min, ejercicio (gimnasio o bici), meditar. Comidas máx 40 min (almuerzo ~13:00, merienda ~17:00, cena ~21:00), siesta 20 min opcional. El gimnasio cierra jueves 21:30 y sábado 13:00: si dice que va al gimnasio, ponelo antes del cierre.",
     "- REPROGRAMAR a mitad del día ('al final estudié X horas', 'no cursé', 'reorganizame todo'): 1) registrá lo que hizo como tareas reales con minutos reales y estado 'Hecho' (si ya existe la tarea de hoy, actualizala; si no, creala con horas encadenadas hacia atrás desde ahora). 2) Las tareas PENDIENTES de hoy que ya no tienen sentido o quedaron obsoletas, sacalas con op 'borrar' (solo si están 'Pendientes' y no son eventos; JAMÁS borres ni cambies tareas 'Hecho'). 3) Las pendientes que siguen valiendo, reubicalas con op 'actualizar' cambiando inicio y fin. 4) Creá las tareas nuevas que falten, contiguas desde ahora hasta ~23:30, priorizando lo más importante por los parciales para maximizar productividad. 5) Si dice que NO fue a algo fijo (ej. no cursó) NO lo marques Hecho ni lo borres: dejalo pendiente y avisale en la respuesta que a las 23:59 va a quedar penalizado, y que si quiere sacarlo se lo pida. 6) La respuesta resume el nuevo plan por bloques con horas.",
+    "- HÁBITOS DIARIOS (se penalizan a las 23:59 si no se hacen; incluilos SIEMPRE al armar cualquier día): Lectura (30 min, habilidad Lectura), Estudiar Inversiones (15 min, habilidad Finanzas), Marca Personal (30 min, habilidad Marca Personal) y Meditar (7 min, habilidad Espiritual). Estudio (clases, grupos de estudio, estudio individual, consultas) y Trabajo (negocio y agencia) NO se penalizan por horas no cumplidas: si hizo menos de lo planeado, solo ajustá o sacá las pendientes y mencionalo.",
     "- Si pide organizar un día futuro, devolvé TODAS las tareas de ese día con inicio y fin (formato AAAA-MM-DDTHH:MM), contiguas y sin superponerse, desde las 7:00 hasta ~23:30, y en la respuesta resumí el plan por bloques con horas.",
     "- Metas de referencia: ~7 h diarias entre estudio y trabajo. Parciales: Cálculo y Organizaciones 24/11, Informática 27/11, Física 30/11.",
     "FORMATO: {\"transcripcion\":\"\",\"acciones\":[{\"op\":\"crear|actualizar|borrar\",\"id\":\"solo para actualizar/borrar\",\"nombre\":\"\",\"habilidad\":\"\",\"min\":0,\"inicio\":\"AAAA-MM-DDTHH:MM\",\"fin\":\"AAAA-MM-DDTHH:MM\",\"estado\":\"Pendientes|En progreso|Hecho\",\"nota\":\"\"}],\"respuesta\":\"texto plano corto, sin markdown\"}"
@@ -223,20 +224,28 @@ async function procesar(env, msg) {
 }
 
 /* ---------- Tareas programadas ---------- */
+/* Hábitos diarios que se penalizan si no se hacen: habilidad -> minutos por defecto */
+const HABITOS = { "Lectura": 30, "Finanzas": 15, "Marca Personal": 30, "Espiritual": 7 };
+const NOMBRE_HABITO = { "Lectura": "Lectura", "Finanzas": "Estudiar Inversiones", "Marca Personal": "Marca Personal", "Espiritual": "Meditar" };
 async function penalizarDia(env, fecha) {
-  const j = await notion(env, "databases/" + DB + "/query", "POST", {
-    page_size: 100,
-    filter: { and: [
-      { property: "Fecha Inicio", date: { on_or_after: fecha } }, { property: "Fecha Inicio", date: { before: sumarDias(fecha, 1) } },
-      { property: "Completado", checkbox: { equals: false } }, { property: "Penalizado", checkbox: { equals: false } }, { property: "Es evento", checkbox: { equals: false } }
-    ] }
-  });
-  let n = 0, pts = 0;
-  for (const p of j.results) {
-    const t = leerTarea(p), perdidos = (t.min == null ? 30 : t.min) * 3;
-    try { await notion(env, "pages/" + t.id, "PATCH", { properties: { "Penalizado": { checkbox: true }, "Puntos perdidos": { number: perdidos } } }); n++; pts += perdidos; } catch (e) {}
+  const ts = await tareasDesde(env, fecha, fecha);
+  const delDia = ts.filter((t) => t.inicio && t.inicio.slice(0, 10) === fecha && !t.evento);
+  let n = 0, pts = 0; const lista = [];
+  for (const h of Object.keys(HABITOS)) {
+    const mias = delDia.filter((t) => t.habilidad === h);
+    if (mias.some((t) => t.hecho)) continue;
+    const pend = mias.find((t) => !t.pen);
+    const min = (pend && pend.min != null ? pend.min : HABITOS[h]), perdidos = min * 3;
+    try {
+      if (pend) await notion(env, "pages/" + pend.id, "PATCH", { properties: { "Penalizado": { checkbox: true }, "Puntos perdidos": { number: perdidos } } });
+      else if (!mias.length) await notion(env, "pages", "POST", { parent: { database_id: DB }, properties: Object.assign(propsDe({ nombre: NOMBRE_HABITO[h], habilidad: h, min: min, inicio: fecha, fin: fecha, estado: "Pendientes", perdidos: perdidos }), { "Penalizado": { checkbox: true } }) });
+      else continue;
+      n++; pts += perdidos; lista.push(NOMBRE_HABITO[h]);
+    } catch (e) {}
   }
-  return { n, pts };
+  const t = delDia.filter((x) => !x.pen && !HABITOS[x.habilidad] && /Estudios|Trabajo/.test(x.habilidad));
+  const plan = t.reduce((a, x) => a + (x.min || 0), 0), hecho = t.filter((x) => x.hecho).reduce((a, x) => a + (x.min || 0), 0);
+  return { n, pts, lista, plan, hecho };
 }
 async function resumenSemanal(env) {
   const hoy = fechaAR(new Date()), desde = sumarDias(hoy, -6);
@@ -265,7 +274,10 @@ export default {
       try {
         if (event.cron === "59 2 * * *") {
           const r = await penalizarDia(env, fechaAR(new Date(Date.now() - 10 * 60e3)));
-          if (r.n) await decir(env, env.ALLOWED_CHAT_ID, "⏰ Cierre del día: " + r.n + " tarea(s) sin hacer quedaron penalizadas (" + r.pts + " puntos perdidos).");
+          let m = "⏰ Cierre del día: ";
+          m += r.n ? "hábitos sin cumplir: " + r.lista.join(", ") + " (" + r.pts + " puntos perdidos)." : "cumpliste todos tus hábitos, sin penalización.";
+          if (r.plan) m += "\nEstudio y trabajo: hiciste " + Math.round(r.hecho / 6) / 10 + " h de " + Math.round(r.plan / 6) / 10 + " h planificadas (esto no penaliza).";
+          await decir(env, env.ALLOWED_CHAT_ID, m);
         } else if (event.cron === "0 1 * * 1") {
           await decir(env, env.ALLOWED_CHAT_ID, await resumenSemanal(env));
         }
