@@ -15,7 +15,7 @@ const HAB = {
   "Marca Personal": "3b8dd23d-90e3-8044-a8be-d753d9a28e26"
 };
 const HAB_POR_ID = Object.fromEntries(Object.entries(HAB).map(([k, v]) => [v.replace(/-/g, ""), k]));
-const MODELOS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-flash-lite-latest", "gemini-flash-latest", "gemini-2.0-flash", "gemini-2.0-flash-lite"];
+const MODELOS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-flash-lite-latest", "gemini-flash-latest"];
 const TZ = "-03:00";
 
 /* ---------- tiempo (Argentina, UTC-3 fijo) ---------- */
@@ -182,6 +182,7 @@ function prompt(hoy, ahora, tareasHoy, tareasSem, texto, hayAudio, proximas) {
 async function gemini(env, partes) {
   let ultimo;
   const t0 = Date.now(), PRESUPUESTO = 17000;
+  let satur = false;
   for (let ronda = 0; ronda < 3; ronda++) {
   if (ronda) await new Promise((r) => setTimeout(r, 2000 * ronda));
   let saturado = false;
@@ -198,7 +199,7 @@ async function gemini(env, partes) {
       });
       const txt = await r.text();
       if (r.status === 401 || r.status === 403) throw Object.assign(new Error("Gemini rechazó la clave"), { fatal: true });
-      if (!r.ok) { ultimo = new Error("Gemini " + r.status); if (r.status === 503 || r.status === 429 || r.status >= 500) saturado = true; continue; }
+      if (!r.ok) { ultimo = new Error("Gemini " + r.status); if (r.status === 503 || r.status === 429 || r.status >= 500) { saturado = true; satur = true; } continue; }
       const j = JSON.parse(txt), c = j.candidates && j.candidates[0];
       const out = c && c.content && c.content.parts ? c.content.parts.map((p) => p.text || "").join("") : "";
       if (!out) { ultimo = new Error("Gemini no respondió"); continue; }
@@ -207,7 +208,10 @@ async function gemini(env, partes) {
   }
   if (!saturado || Date.now() - t0 > PRESUPUESTO - 3000) break;
   }
-  throw ultimo || new Error("Gemini no respondió");
+  const fin = ultimo || new Error("Gemini no respondió");
+  if (satur || /aborted|tardó/i.test(String(fin.message))) fin.sat = true;
+  if (satur && !/503|429|5\d\d/.test(fin.message)) fin.message = "Gemini 503";
+  throw fin;
 }
 function parseJSON(s) {
   try { return JSON.parse(s); } catch (e) {}
@@ -315,6 +319,11 @@ async function procesar(env, msg) {
     if (fallas.length) out += "\n\n⚠️ " + fallas.join("; ");
     await decir(env, chat, out);
   } catch (e) {
+    const edad = Date.now() / 1000 - (msg.date || 0);
+    if (e.sat && edad < 20 * 60) {
+      if (edad < 90) await decir(env, chat, "Google está saturado. Lo reintento solo en unos minutos, no hace falta que lo mandes de nuevo.");
+      return "reintentar";
+    }
     await decir(env, chat, "No pude procesarlo: " + e.message + ". Probá de nuevo.");
   }
 }
@@ -437,7 +446,7 @@ export default {
     if (url.pathname === "/telegram" && req.method === "POST") {
       if (req.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.WEBHOOK_SECRET) return new Response("no", { status: 403 });
       const up = await req.json();
-      if (up.message) ctx.waitUntil(procesar(env, up.message));
+      if (up.message) { const r = await procesar(env, up.message); if (r === "reintentar") return new Response("reintentar", { status: 503 }); }
       return new Response("ok");
     }
     return new Response("Agente de Manu activo.");
