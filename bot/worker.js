@@ -123,14 +123,15 @@ async function aplicarAcciones(env, acciones, validos, sem, hoy) {
         const muerto = /tiempo muerto|deambul|vueltas|libre|ocio/i.test(a.nombre);
         const hab = muerto ? "" : (HAB[a.habilidad] ? a.habilidad : "");
         const solapa = (t) => { const ts = Date.parse(t.inicio), te = Date.parse(t.fin); return Math.max(0, Math.min(te, e0) - Math.max(ts, s0)) / Math.max(1, te - ts); };
-        const delDia = (sem || []).filter((t) => t.inicio && t.inicio.length > 10 && t.fin && diaDe(t) === dia && !t.hecho && !t.evento && !(log.tocados.has(t.id)));
+        const delDia = (sem || []).filter((t) => t.inicio && t.inicio.length > 10 && t.fin && diaDe(t) === dia && !t.evento && !t.archivado && !(log.tocados.has(t.id)));
         const mismo = (t) => t.nombre === a.nombre || (hab && t.habilidad === hab);
-        const cand = delDia.filter(mismo).map((t) => [t, solapa(t)]).sort((x, y) => y[1] - x[1]);
+        const solapaN = (t) => { const ts = Date.parse(t.inicio), te = Date.parse(t.fin); const o = Math.max(0, Math.min(te, e0) - Math.max(ts, s0)); return Math.max(o / Math.max(1, te - ts), o / Math.max(1, e0 - s0)); };
+        const cand = delDia.filter(mismo).map((t) => [t, solapaN(t)]).filter((x) => !x[0].hecho || x[1] >= 0.5).sort((x, y) => (y[0].hecho - x[0].hecho) || (y[1] - x[1]));
         const props = { "Nombre": { title: [{ text: { content: String(a.nombre).slice(0, 200) } }] }, "Duración (min)": { number: min }, "Fecha Inicio": { date: { start: aISO(s0) } }, "Fecha Fin": { date: { start: aISO(e0) } }, "Estado": { status: { name: "Hecho" } }, "Completado": { checkbox: true } };
         if (hab) props["Habilidad"] = { relation: [{ id: HAB[hab] }] };
         if (a.detalle) props["Descripción"] = { rich_text: [{ text: { content: String(a.detalle).slice(0, 1900) } }] };
         let usado = null;
-        if (cand.length && (cand[0][1] > 0 || Date.parse(cand[0][0].inicio) < Date.now())) {
+        if (cand.length && (cand[0][0].hecho || cand[0][1] > 0 || Date.parse(cand[0][0].inicio) < Date.now())) {
           usado = cand[0][0];
           await notion(env, "pages/" + usado.id, "PATCH", { properties: props });
           usado.hecho = true; usado.inicio = aISO(s0); usado.fin = aISO(e0); usado.min = min;
@@ -144,7 +145,7 @@ async function aplicarAcciones(env, acciones, validos, sem, hoy) {
         for (const [t, f] of cand) {
           if (t === usado || f < 0.5) continue;
           await notion(env, "pages/" + t.id, "PATCH", { archived: true });
-          t.hecho = true; log.push("saqué " + t.nombre + " planificado (ya cubierto)");
+          t.hecho = true; t.archivado = true; log.push("saqué " + t.nombre + " planificado (ya cubierto)");
         }
         log.push("registré " + a.nombre + " " + horaAR(new Date(s0)) + "-" + horaAR(new Date(e0)));
       } else if (a.op === "crear") {
@@ -309,8 +310,11 @@ const decir = (env, chat, texto) => tg(env, "sendMessage", { chat_id: chat, text
 
 /* Reacomoda los bloques pendientes de hoy para que no se superpongan: respeta lo hecho, lo en progreso y lo fijo (cursada, gimnasio, parcial, consultas) y corre el resto al siguiente hueco libre, sin cambiar duraciones. */
 async function reacomodar(env, hoy, tocados) {
-  const ahora = Date.now(), cinco = 5 * 60e3, finDia = Date.parse(sumarDias(hoy, 1) + "T0" + HORA_CORTE + ":00:00" + TZ);
+  const ahora = Date.now(), cinco = 5 * 60e3, finDia0 = Date.parse(sumarDias(hoy, 1) + "T01:00:00" + TZ);
+  let finDia = finDia0;
   const ts = (await tareasDesde(env, hoy, sumarDias(hoy, 1))).filter((t) => t.inicio && t.inicio.length > 10 && t.fin && diaDe(t) === hoy && !t.evento);
+  const sue = ts.find((t) => /sue[ñn]o/i.test(t.nombre) && !t.hecho); if (sue) finDia = Math.min(finDia0, Date.parse(sue.inicio));
+  const esHabito = (t) => Object.keys(NOMBRE_HABITO).some((h) => NOMBRE_HABITO[h] === t.nombre);
   const fijo = (t) => (tocados && tocados.has(t.id)) || t.hecho || t.estado === "En progreso" || /cursada|gimnasio|ejercicio|parcial|consulta|clase|sue[ñn]o/i.test(t.nombre);
   const placed = [];
   ts.filter(fijo).forEach((t) => placed.push([Date.parse(t.inicio), Math.max(Date.parse(t.fin), t.estado === "En progreso" && t.min ? Date.parse(t.inicio) + t.min * 60e3 : 0)]));
@@ -321,7 +325,10 @@ async function reacomodar(env, hoy, tocados) {
     if (!(dur > 0)) continue;
     let x = Math.max(s0, Math.ceil(ahora / cinco) * cinco), cambio = true;
     while (cambio) { cambio = false; for (const [ps, pe] of placed) { if (x < pe && x + dur > ps) { x = pe; cambio = true; } } }
-    if (x + dur > finDia) { placed.push([s0, e0]); continue; }
+    if (x + dur > finDia) {
+      if (!esHabito(t)) { await notion(env, "pages/" + t.id, "PATCH", { archived: true }); movidos.push(t.nombre + " (no entraba, lo saqué)"); continue; }
+      placed.push([s0, e0]); continue;
+    }
     placed.push([x, x + dur]);
     if (x !== s0) {
       await notion(env, "pages/" + t.id, "PATCH", { properties: { "Fecha Inicio": { date: { start: aISO(x) } }, "Fecha Fin": { date: { start: aISO(x + dur) } } } });
