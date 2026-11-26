@@ -105,6 +105,8 @@ async function aplicarAcciones(env, acciones, validos, sem, hoy) {
         const ahoraMs = Date.now(), pend = cs.filter((t) => !t.hecho && t.inicio).sort((x, y) => Math.abs(Date.parse(x.inicio) - ahoraMs) - Math.abs(Date.parse(y.inicio) - ahoraMs));
         usados[nombre] = usados[nombre] || null;
         let c = usados[nombre] || pend[0] || cs[cs.length - 1];
+        /* un bloque ya hecho de otro momento del día no se estira ni se mueve: se crea uno nuevo */
+        if (c && c.hecho && !usados[nombre] && c.fin && c.fin.length > 10 && Date.parse(c.fin) < refMs - min * 60e3 - 15 * 60e3) c = null;
         usados[nombre] = c || null;
         if (c) {
           const total = (c.hecho ? (c.min || 0) : 0) + min, finMs = Math.max(refMs, c.hecho && c.fin && c.fin.length > 10 ? Date.parse(c.fin) : 0), desc = ((c.desc ? c.desc + "\n" : "") + linea).slice(-1900);
