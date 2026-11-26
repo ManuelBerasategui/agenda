@@ -77,101 +77,382 @@ function fechaNotion(s) { return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : s.length ==
 function propsDe(a) {
   const p = {};
   if (a.nombre) p["Nombre"] = { title: [{ text: { content: String(a.nombre).slice(0, 200) } }] };
-  if (a.habilidad && HAB[a.habilidad]) p["Habilidad"] = { relation: [{ id: HAB[a.habilidad] }] };
+  if (a.habilidad !== undefined) p["Habilidad"] = { relation: a.habilidad && HAB[a.habilidad] ? [{ id: HAB[a.habilidad] }] : [] };
   if (a.min != null && !isNaN(+a.min)) p["Duración (min)"] = { number: Math.max(0, Math.round(+a.min)) };
-  if (a.inicio) { p["Fecha Inicio"] = { date: { start: fechaNotion(a.inicio) } }; }
-  if (a.fin) { p["Fecha Fin"] = { date: { start: fechaNotion(a.fin) } }; }
-  if (a.estado) { p["Estado"] = { status: { name: a.estado } }; if (a.estado === "Hecho") p["Completado"] = { checkbox: true }; }
-  if (a.estado === "Pendientes" || a.estado === "En progreso") p["Completado"] = { checkbox: false };
-  if (a.penalizado) { p["Penalizado"] = { checkbox: true }; }
+  if (a.inicio) p["Fecha Inicio"] = { date: { start: fechaNotion(a.inicio) } };
+  if (a.fin) p["Fecha Fin"] = { date: { start: fechaNotion(a.fin) } };
+  if (a.estado) { p["Estado"] = { status: { name: a.estado } }; p["Completado"] = { checkbox: a.estado === "Hecho" }; }
+  if (a.penalizado) p["Penalizado"] = { checkbox: true };
   if (a.perdidos != null) p["Puntos perdidos"] = { number: Math.max(0, Math.round(+a.perdidos)) };
-  if (a.nota) p["Descripción"] = { rich_text: [{ text: { content: String(a.nota).slice(0, 1900) } }] };
+  if (a.nota != null) p["Descripción"] = { rich_text: a.nota ? [{ text: { content: String(a.nota).slice(-1900) } }] : [] };
+  if (a.evento != null) p["Es evento"] = { checkbox: !!a.evento };
   return p;
 }
-async function aplicarAcciones(env, acciones, validos, sem, hoy) {
-  const log = [];
-  log.tocados = new Set();
-  const usados = {};
-  for (const a of acciones || []) {
-    try {
-      if (a.estado && ["Pendientes", "En progreso", "Hecho"].indexOf(a.estado) < 0) a.estado = "";
-      if (a.op === "sumar") {
-        const min = Math.round(+a.min);
-        if (!(min > 0)) { log.push("saltée una suma sin minutos"); continue; }
-        const nombre = a.nombre || "Trabajo Diario", hab = HAB[a.habilidad] ? a.habilidad : "Trabajo", fecha = hoy, linea = horaAR(new Date()) + " · " + (a.detalle || "trabajo") + " (" + min + " min)";
-        let refMs = Math.floor(Date.now() / 60e3) * 60e3;
-        if (a.hasta && /^\d{1,2}:\d{2}$/.test(String(a.hasta))) { const [hh, mm] = String(a.hasta).split(":"); refMs = Date.parse(fecha + "T" + hh.padStart(2, "0") + ":" + mm + ":00" + TZ); }
-        const cs = (sem || []).filter((t) => t.nombre === nombre && t.inicio && diaDe(t) === fecha).sort((x, y) => (x.inicio < y.inicio ? -1 : 1));
-        const ahoraMs = Date.now(), pend = cs.filter((t) => !t.hecho && t.inicio).sort((x, y) => Math.abs(Date.parse(x.inicio) - ahoraMs) - Math.abs(Date.parse(y.inicio) - ahoraMs));
-        usados[nombre] = usados[nombre] || null;
-        let c = usados[nombre] || pend[0] || cs[cs.length - 1];
-        /* un bloque ya hecho de otro momento del día no se estira ni se mueve: se crea uno nuevo */
-        if (c && c.hecho && !usados[nombre] && c.fin && c.fin.length > 10 && Date.parse(c.fin) < refMs - min * 60e3 - 15 * 60e3) c = null;
-        usados[nombre] = c || null;
-        if (c) {
-          const total = (c.hecho ? (c.min || 0) : 0) + min, finMs = Math.max(refMs, c.hecho && c.fin && c.fin.length > 10 ? Date.parse(c.fin) : 0), desc = ((c.desc ? c.desc + "\n" : "") + linea).slice(-1900);
-          await notion(env, "pages/" + c.id, "PATCH", { properties: { "Duración (min)": { number: total }, "Estado": { status: { name: "Hecho" } }, "Completado": { checkbox: true }, "Fecha Inicio": { date: { start: aISO(finMs - total * 60e3) } }, "Fecha Fin": { date: { start: aISO(finMs) } }, "Descripción": { rich_text: [{ text: { content: desc } }] } } });
-          c.hecho = true; c.min = total; c.desc = desc; c.inicio = aISO(finMs - total * 60e3); c.fin = aISO(finMs);
-          log.push("sumé " + min + " min a " + nombre + " (total " + total + ")");
-        } else {
-          const pg = await notion(env, "pages", "POST", { parent: { database_id: DB }, properties: { "Nombre": { title: [{ text: { content: nombre } }] }, "Habilidad": { relation: [{ id: HAB[hab] }] }, "Duración (min)": { number: min }, "Fecha Inicio": { date: { start: aISO(refMs - min * 60e3) } }, "Fecha Fin": { date: { start: aISO(refMs) } }, "Estado": { status: { name: "Hecho" } }, "Completado": { checkbox: true }, "Descripción": { rich_text: [{ text: { content: linea } }] } } });
-          const nuevo = { id: pg.id, nombre, hecho: true, min, desc: linea, inicio: aISO(refMs - min * 60e3), fin: aISO(refMs), habilidad: hab }; (sem || []).push(nuevo); usados[nombre] = nuevo;
-          log.push("creé " + nombre + " con " + min + " min");
-        }
-      } else if (a.op === "registro") {
-        const s0 = Date.parse(fechaNotion(String(a.inicio || ""))), e0 = Date.parse(fechaNotion(String(a.fin || "")));
-        if (!(s0 < e0) || !a.nombre) { log.push("saltée un registro sin horas válidas"); continue; }
-        const min = Math.round((e0 - s0) / 60e3), dia = diaDe({ inicio: aISO(s0) });
-        const muerto = /tiempo muerto|deambul|vueltas|libre|ocio/i.test(a.nombre);
-        const hab = muerto ? "" : (HAB[a.habilidad] ? a.habilidad : "");
-        const solapa = (t) => { const ts = Date.parse(t.inicio), te = Date.parse(t.fin); return Math.max(0, Math.min(te, e0) - Math.max(ts, s0)) / Math.max(1, te - ts); };
-        const delDia = (sem || []).filter((t) => t.inicio && t.inicio.length > 10 && t.fin && diaDe(t) === dia && !t.evento && !t.archivado && !(log.tocados.has(t.id)));
-        const mismo = (t) => t.nombre === a.nombre || (hab && t.habilidad === hab);
-        const solapaN = (t) => { const ts = Date.parse(t.inicio), te = Date.parse(t.fin); const o = Math.max(0, Math.min(te, e0) - Math.max(ts, s0)); return Math.max(o / Math.max(1, te - ts), o / Math.max(1, e0 - s0)); };
-        const cand = delDia.filter(mismo).map((t) => [t, solapaN(t)]).filter((x) => !x[0].hecho || x[1] >= 0.5).sort((x, y) => (y[0].hecho - x[0].hecho) || (y[1] - x[1]));
-        const props = { "Nombre": { title: [{ text: { content: String(a.nombre).slice(0, 200) } }] }, "Duración (min)": { number: min }, "Fecha Inicio": { date: { start: aISO(s0) } }, "Fecha Fin": { date: { start: aISO(e0) } }, "Estado": { status: { name: "Hecho" } }, "Completado": { checkbox: true } };
-        if (hab) props["Habilidad"] = { relation: [{ id: HAB[hab] }] };
-        if (a.detalle) props["Descripción"] = { rich_text: [{ text: { content: String(a.detalle).slice(0, 1900) } }] };
-        let usado = null;
-        if (cand.length && (cand[0][0].hecho || cand[0][1] > 0 || Date.parse(cand[0][0].inicio) < Date.now())) {
-          usado = cand[0][0];
-          await notion(env, "pages/" + usado.id, "PATCH", { properties: props });
-          usado.hecho = true; usado.inicio = aISO(s0); usado.fin = aISO(e0); usado.min = min;
-        } else {
-          const pg = await notion(env, "pages", "POST", { parent: { database_id: DB }, properties: props });
-          usado = { id: pg.id, nombre: a.nombre, hecho: true, inicio: aISO(s0), fin: aISO(e0), min, habilidad: hab };
-          (sem || []).push(usado);
-        }
-        log.tocados.add(usado.id);
-        /* bloques planificados de lo mismo que quedaron cubiertos por lo que hizo: ya se consumieron */
-        for (const [t, f] of cand) {
-          if (t === usado || f < 0.5) continue;
-          await notion(env, "pages/" + t.id, "PATCH", { archived: true });
-          t.hecho = true; t.archivado = true; log.push("saqué " + t.nombre + " planificado (ya cubierto)");
-        }
-        log.push("registré " + a.nombre + " " + horaAR(new Date(s0)) + "-" + horaAR(new Date(e0)));
-      } else if (a.op === "crear") {
-        if (!a.nombre || ((!a.habilidad || !HAB[a.habilidad]) && !/almuerzo|cena|merienda|desayuno|siesta|pausa|descanso|colaci|traslado|viaje|ducha|aseo|tiempo muerto|deambul|libre/i.test(a.nombre))) { log.push("saltée una tarea sin nombre o habilidad válida"); continue; }
-        const diaA = a.inicio && a.inicio.length >= 16 ? diaDe({ inicio: fechaNotion(a.inicio) }) : (a.inicio || hoy).slice(0, 10);
-        const dup = (sem || []).find((t) => t.nombre === a.nombre && !t.hecho && t.inicio && diaDe(t) === diaA);
-        if (dup) { await notion(env, "pages/" + dup.id, "PATCH", { properties: propsDe(a) }); if (a.inicio) log.tocados.add(dup.id); log.push("actualicé " + a.nombre + " (ya existía)"); continue; }
-        const pgc = await notion(env, "pages", "POST", { parent: { database_id: DB }, properties: propsDe(a) });
-        if (a.inicio && pgc && pgc.id) log.tocados.add(pgc.id);
-        log.push("creé " + a.nombre);
-      } else if (a.op === "actualizar" && a.id && validos.has(a.id)) {
-        await notion(env, "pages/" + a.id, "PATCH", { properties: propsDe(a) });
-        if (a.inicio) log.tocados.add(a.id);
-        log.push("actualicé " + (a.nombre || a.id));
-      } else if (a.op === "borrar" && a.id && validos.has(a.id)) {
-        await notion(env, "pages/" + a.id, "PATCH", { archived: true });
-        log.push("saqué " + (a.nombre || a.id));
-      } else log.push("ignoré una acción inválida");
-    } catch (e) { log.push("falló '" + (a.nombre || a.id) + "': " + e.message); }
-  }
-  return log;
+
+/* ======================= MOTOR DE AGENDA =======================
+   Gemini solo ENTIENDE el mensaje (qué hizo, qué hace ahora, qué sigue, qué es fijo).
+   Todas las horas y el orden del día los calcula este código, siempre igual. */
+const M = 60e3;
+const mm = (x) => parseInt(x.slice(0, 2), 10) * 60 + parseInt(x.slice(3, 5), 10);
+const hh = (m) => pad(Math.floor(m / 60)) + ":" + pad(m % 60);
+const ms = (iso) => Date.parse(iso);
+const conHora = (t) => !!(t.inicio && t.inicio.length > 10 && t.fin && t.fin.length > 10);
+const r5 = (x) => Math.ceil(x / (5 * M)) * 5 * M;
+const hm = (x) => horaAR(new Date(x));
+const norm = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\(.*?\)/g, "").replace(/\s+/g, " ").trim();
+/* "HH:MM" del día lógico -> ms (las horas antes de las 05:00 son de la madrugada siguiente) */
+const enHora = (dia, hhmm) => {
+  const m = String(hhmm || "").match(/^(\d{1,2})(?::(\d{2}))?/); if (!m) return NaN;
+  const h = +m[1], mi = +(m[2] || 0), f = h < HORA_CORTE ? sumarDias(dia, 1) : dia;
+  return Date.parse(f + "T" + pad(h) + ":" + pad(mi) + ":00" + TZ);
+};
+const SIN_HAB = /desayuno|almuerzo|merienda|cena|comida|traslado|colectivo|bondi|viaje|tiempo muerto|sin registrar|pausa|descanso|ducha/i;
+const REGLAS_HAB = [
+  [/sue[ñn]o|siesta|dorm/i, "Sueño"], [/medit/i, "Espiritual"], [/inversi|finanz/i, "Finanzas"],
+  [/marca personal|linkedin/i, "Marca Personal"], [/lectura|leer|le[ií]|libro/i, "Lectura"],
+  [/ejercicio|gimnasio|gym|correr|bici|entren/i, "Ejercicio"],
+  [/whatsapp|consultas\b|historias|video|cliente|carrusel|agencia|venta|contenido|seguimiento|negocio|trabaj/i, "Trabajo"],
+  [/estudi|m[oó]dulo|cursada|clase|consulta|parcial|f[ií]sica|inform[aá]tica|c[aá]lculo|facultad|repaso/i, "Estudios"]
+];
+function habDe(nombre, hab) {
+  if (HAB[hab]) return hab;
+  if (SIN_HAB.test(nombre || "")) return "";
+  for (const [re, h] of REGLAS_HAB) if (re.test(nombre || "")) return h;
+  return "";
+}
+const MATERIA = /f[ií]sica|inform[aá]tica|c[aá]lculo|organizaci|ingenier|qu[ií]mica|algebra|álgebra|dibujo/i;
+const COMIDA = { desayuno: 0, almuerzo: 12 * 60 + 30, merienda: 17 * 60, cena: 20 * 60 + 30 };
+const comidaDe = (n) => { const k = Object.keys(COMIDA).find((c) => norm(n).includes(c)); return k || null; };
+const esHabito = (t) => Object.values(NOMBRE_HABITO).some((n) => norm(n) === norm(t.nombre)) || (t.habilidad && t.habilidad !== "Estudios" && t.habilidad !== "Trabajo" && t.habilidad !== "Sueño" && !!HABITOS[t.habilidad]);
+const FIJO_NOMBRE = /^(cursada|clase|consulta|parcial|examen|turno|reuni[oó]n|traslado|sue[ñn]o|colectivo|viaje|m[eé]dico|dentista)/i;
+const durDefecto = (nombre, hab) => comidaDe(nombre) ? (comidaDe(nombre) === "merienda" ? 20 : comidaDe(nombre) === "desayuno" ? 30 : 40) : hab === "Estudios" ? 50 : hab === "Trabajo" ? 30 : HABITOS[hab] || 30;
+const duracion = (t) => t.min || (conHora(t) ? Math.round((ms(t.fin) - ms(t.inicio)) / M) : 30);
+function parecido(t, nombre, hab) {
+  const a = norm(t.nombre), b = norm(nombre);
+  if (!b) return false;
+  if (a === b) return true;
+  if (/tiempo muerto|sin registrar/.test(b) || /tiempo muerto|sin registrar/.test(a)) return false;
+  const ca = comidaDe(t.nombre), cb = comidaDe(nombre);
+  if (ca || cb) return ca === cb;
+  const h = habDe(nombre, hab);
+  if (!h || t.habilidad !== h) return false;
+  const TIPO = /^(consulta|cursada|clase|parcial|examen)/i;
+  if (TIPO.test(norm(t.nombre)) !== TIPO.test(b) || (TIPO.test(b) && norm(t.nombre).split(" ")[0] !== b.split(" ")[0])) return false;
+  if (h === "Estudios") { const ma = (t.nombre.match(MATERIA) || [""])[0], mb = (nombre.match(MATERIA) || [""])[0]; if (ma && mb) return norm(ma) === norm(mb); }
+  return true;
 }
 
-/* ---------- resumen para analizar ---------- */
+/* Contexto de un día: tareas en memoria + cambios a mandar a Notion al final */
+async function cargarDia(env, dia) {
+  const ts = (await tareasDesde(env, dia, sumarDias(dia, 1))).filter((t) => t.inicio && diaDe(t) === dia);
+  return { env, dia, ts, cambios: new Map(), anclados: new Set(), prioridad: [], log: [], quitados: [], sinRegistro: [] };
+}
+function cambiar(cx, t, a) {
+  if (a.inicio) t.inicio = fechaNotion(a.inicio);
+  if (a.fin) t.fin = fechaNotion(a.fin);
+  if (a.min != null) t.min = a.min;
+  if (a.estado) { t.estado = a.estado; t.hecho = a.estado === "Hecho"; }
+  if (a.nombre) t.nombre = a.nombre;
+  if (a.habilidad !== undefined) t.habilidad = a.habilidad;
+  if (a.nota != null) t.desc = a.nota;
+  if (a.evento != null) t.evento = !!a.evento;
+  if (a.archivar) t.archivado = true;
+  const prev = cx.cambios.get(t.id) || {};
+  cx.cambios.set(t.id, Object.assign(prev, a));
+}
+async function crear(cx, a) {
+  const t = { id: "nuevo-" + Math.random().toString(36).slice(2), nuevo: true, nombre: a.nombre, habilidad: a.habilidad || "", min: a.min, estado: a.estado || "Pendientes", hecho: a.estado === "Hecho", inicio: fechaNotion(a.inicio), fin: fechaNotion(a.fin), desc: a.nota || "", evento: !!a.evento };
+  cx.ts.push(t); cx.cambios.set(t.id, Object.assign({}, a));
+  return t;
+}
+async function guardar(cx) {
+  for (const [id, a] of cx.cambios) {
+    const t = cx.ts.find((x) => x.id === id);
+    if (t && t.nuevo) { if (t.archivado) continue; const pg = await notion(cx.env, "pages", "POST", { parent: { database_id: DB }, properties: propsDe(Object.assign({}, a, { inicio: t.inicio, fin: t.fin, min: t.min, estado: t.estado, nombre: t.nombre, habilidad: t.habilidad })) }); t.id = pg.id; t.nuevo = false; continue; }
+    if (a.archivar) { await notion(cx.env, "pages/" + id, "PATCH", { archived: true }); continue; }
+    const b = Object.assign({}, a); delete b.archivar;
+    if (Object.keys(b).length) await notion(cx.env, "pages/" + id, "PATCH", { properties: propsDe(b) });
+  }
+  cx.cambios.clear();
+}
+const vivas = (cx) => cx.ts.filter((t) => !t.archivado);
+
+/* Registra algo que YA hizo, con horas reales. Reusa el bloque planificado de lo mismo y saca lo que quedó cubierto. */
+async function registrar(cx, it, s, e) {
+  const nombre = it.nombre, hab = habDe(nombre, it.habilidad), min = Math.max(1, Math.round((e - s) / M));
+  const solapa = (t) => { if (!conHora(t)) return 0; const a = ms(t.inicio), b = ms(t.fin), o = Math.max(0, Math.min(b, e) - Math.max(a, s)); return Math.max(o / Math.max(M, b - a), o / Math.max(M, e - s)); };
+  const cerca = (t) => Math.abs((conHora(t) ? ms(t.inicio) : s) - s);
+  const cand = vivas(cx).filter((t) => !t.usado && parecido(t, nombre, hab) && (t.estado === "En progreso" || (!t.hecho && (!conHora(t) || ms(t.inicio) < Date.now() + 3 * 3600e3)) || (t.hecho && solapa(t) >= 0.5)))
+    .sort((x, y) => ((y.estado === "En progreso") - (x.estado === "En progreso")) || ((y.hecho && solapa(y) >= 0.5) - (x.hecho && solapa(x) >= 0.5)) || (cerca(x) - cerca(y)));
+  const a = { inicio: aISO(s), fin: aISO(e), min, estado: "Hecho" };
+  if (it.detalle) a.nota = it.detalle;
+  let t = cand[0];
+  if (t) cambiar(cx, t, a);
+  else t = await crear(cx, Object.assign({ nombre, habilidad: hab }, a));
+  t.usado = true; cx.anclados.add(t.id);
+  vivas(cx).forEach((o) => {
+    if (o === t || !conHora(o)) return;
+    const f = solapa(o);
+    if (/sin registrar/i.test(o.nombre) && f > 0) { cambiar(cx, o, { archivar: true }); return; }
+    if (f >= 0.5 && !o.usado && parecido(o, nombre, hab)) cambiar(cx, o, { archivar: true });
+  });
+  cx.log.push("✅ " + t.nombre + " " + hm(s) + "–" + hm(e) + " (" + min + " min)");
+  return t;
+}
+
+/* Lista de 'hecho' en orden cronológico -> horas reales (encadena hacia atrás desde 'hasta' o desde ahora) */
+async function procesarHecho(cx, items, ahora) {
+  const L = (items || []).filter((x) => x && x.nombre);
+  if (!L.length) return;
+  const res = new Array(L.length);
+  let cursor = ahora;
+  for (let i = L.length - 1; i >= 0; i--) {
+    const it = L[i];
+    let e = it.hasta ? enHora(cx.dia, it.hasta) : cursor;
+    if (!(e <= ahora + 5 * M)) e = Math.min(cursor, ahora);
+    let s = it.desde ? enHora(cx.dia, it.desde) : NaN;
+    if (isNaN(s) && it.min > 0 && !it.hasta) {
+      /* si lo había arrancado (En progreso), cuenta desde ahí */
+      const hab0 = habDe(it.nombre, it.habilidad);
+      const pr = vivas(cx).find((t) => t.estado === "En progreso" && parecido(t, it.nombre, hab0) && conHora(t) && ms(t.inicio) + it.min * M <= e);
+      if (pr) { s = ms(pr.inicio); e = s + it.min * M; }
+    }
+    if (isNaN(s) && it.min > 0) s = e - it.min * M;
+    if (isNaN(s)) {
+      if (/tiempo muerto|vueltas|deambul/i.test(it.nombre)) { res[i] = { it, relleno: true, e }; cursor = e; continue; }
+      /* "terminé X" sin minutos: desde que arrancó (En progreso) o desde lo último registrado */
+      const hab = habDe(it.nombre, it.habilidad);
+      const prog = vivas(cx).find((t) => t.estado === "En progreso" && parecido(t, it.nombre, hab) && conHora(t) && ms(t.inicio) < e);
+      const plan = vivas(cx).find((t) => !t.hecho && t.estado !== "En progreso" && parecido(t, it.nombre, hab) && t.min > 0);
+      const prev = vivas(cx).filter((t) => t.hecho && conHora(t) && ms(t.fin) <= e).sort((a, b) => ms(b.fin) - ms(a.fin))[0];
+      if (prog) s = ms(prog.inicio);
+      else if (plan && conHora(plan) && ms(plan.inicio) < e && e - ms(plan.inicio) <= 4 * 3600e3) s = Math.max(ms(plan.inicio), prev ? ms(prev.fin) : 0, e - 150 * M);
+      else if (plan) s = e - plan.min * M;
+      else if (prev && e - ms(prev.fin) <= 4 * 3600e3) s = ms(prev.fin);
+      else { cx.log.push("❓ no sé cuánto duró " + it.nombre + ", decime los minutos"); continue; }
+    }
+    if (!(s < e)) continue;
+    res[i] = { it, s, e }; cursor = s;
+  }
+  for (let i = 0; i < res.length; i++) {
+    const r = res[i]; if (!r) continue;
+    if (r.relleno) {
+      const prev = vivas(cx).filter((t) => t.hecho && conHora(t) && ms(t.fin) <= r.e).sort((a, b) => ms(b.fin) - ms(a.fin))[0];
+      const s = prev ? ms(prev.fin) : NaN;
+      if (s < r.e && r.e - s <= 4 * 3600e3) await registrar(cx, { nombre: "Tiempo muerto", detalle: r.it.detalle }, s, r.e);
+      continue;
+    }
+    await registrar(cx, r.it, r.s, r.e);
+  }
+}
+
+/* Lo que quedó "En progreso" y ya pasó su hora de fin: se asume hecho como estaba planificado (y se avisa) */
+function cerrarViejos(cx, ahora) {
+  vivas(cx).forEach((t) => {
+    if (t.estado === "En progreso" && conHora(t) && !t.usado && ms(t.fin) < ahora - 10 * M) {
+      cambiar(cx, t, { estado: "Hecho" }); t.usado = true;
+      cx.log.push("✔️ Asumí que hiciste " + t.nombre + " " + hm(ms(t.inicio)) + "–" + hm(ms(t.fin)) + " (si no, decime)");
+    }
+  });
+}
+/* Lo que arranca ahora (o en N minutos) */
+async function procesarAhora(cx, it, ahora) {
+  if (!it || !it.nombre) return;
+  const hab = habDe(it.nombre, it.habilidad);
+  const s = ahora + Math.max(0, +it.en || 0) * M;
+  const cand = vivas(cx).filter((t) => !t.hecho && parecido(t, it.nombre, hab)).sort((a, b) => (b.estado === "En progreso") - (a.estado === "En progreso") || Math.abs((conHora(a) ? ms(a.inicio) : s) - s) - Math.abs((conHora(b) ? ms(b.inicio) : s) - s))[0];
+  const min = it.min > 0 ? Math.round(it.min) : cand ? duracion(cand) : durDefecto(it.nombre, hab);
+  const estado = (+it.en || 0) <= 10 ? "En progreso" : "Pendientes";
+  vivas(cx).forEach((t) => { if (t.estado === "En progreso" && t !== cand) cambiar(cx, t, { estado: "Pendientes" }); });
+  let t = cand;
+  if (t) cambiar(cx, t, { inicio: aISO(s), fin: aISO(s + min * M), min, estado });
+  else t = await crear(cx, { nombre: it.nombre, habilidad: hab, inicio: aISO(s), fin: aISO(s + min * M), min, estado });
+  t.usado = true; cx.anclados.add(t.id);
+  cx.log.push("▶️ " + t.nombre + " " + hm(s) + "–" + hm(s + min * M));
+}
+
+/* Lo que sigue, en orden: reusa bloques planificados o crea nuevos */
+async function procesarDespues(cx, items, ahora) {
+  for (const it of items || []) {
+    if (!it || !it.nombre) continue;
+    const hab = habDe(it.nombre, it.habilidad);
+    let t = vivas(cx).find((x) => !x.hecho && x.estado !== "En progreso" && !x.usado && !cx.anclados.has(x.id) && parecido(x, it.nombre, hab));
+    const min = it.min > 0 ? Math.round(it.min) : t ? duracion(t) : durDefecto(it.nombre, hab);
+    if (t) cambiar(cx, t, { min });
+    else t = await crear(cx, { nombre: it.nombre, habilidad: hab, inicio: aISO(ahora), fin: aISO(ahora + min * M), min, estado: "Pendientes" });
+    t.usado = true; cx.prioridad.push(t.id);
+  }
+}
+
+async function procesarFijos(cx, items) {
+  for (const it of items || []) {
+    if (!it || !it.nombre || !it.desde) continue;
+    const dia = it.fecha || cx.dia;
+    const s = enHora(dia, it.desde), e = it.hasta ? enHora(dia, it.hasta) : s + (it.min || 60) * M;
+    if (!(s < e)) continue;
+    const hab = habDe(it.nombre, it.habilidad);
+    if (dia !== cx.dia) { await notion(cx.env, "pages", "POST", { parent: { database_id: DB }, properties: propsDe({ nombre: it.nombre, habilidad: hab, inicio: aISO(s), fin: aISO(e), min: Math.round((e - s) / M), estado: "Pendientes", evento: true, nota: it.nota || "" }) }); cx.log.push("📌 " + it.nombre + " el " + dia.slice(8) + "/" + dia.slice(5, 7) + " " + hm(s) + "–" + hm(e)); continue; }
+    let t = vivas(cx).find((x) => !x.hecho && norm(x.nombre) === norm(it.nombre));
+    const a = { inicio: aISO(s), fin: aISO(e), min: Math.round((e - s) / M), evento: true };
+    if (it.nota) a.nota = it.nota;
+    if (t) cambiar(cx, t, a); else t = await crear(cx, Object.assign({ nombre: it.nombre, habilidad: hab, estado: "Pendientes" }, a));
+    cx.anclados.add(t.id);
+    cx.log.push("📌 " + it.nombre + " " + hm(s) + "–" + hm(e));
+  }
+}
+
+function procesarNoHace(cx, nombres) {
+  for (const n of nombres || []) {
+    const t = vivas(cx).find((x) => !x.hecho && (norm(x.nombre) === norm(n) || parecido(x, n, "")));
+    if (!t) continue;
+    if (esHabito(t)) { cambiar(cx, t, { inicio: cx.dia, fin: cx.dia, estado: "Pendientes" }); cx.log.push("🚫 " + t.nombre + " hoy no (cuenta como no cumplido)"); }
+    else { cambiar(cx, t, { archivar: true }); cx.log.push("🚫 saqué " + t.nombre); }
+  }
+}
+
+/* Coloca bloques uno detrás de otro desde 'cursor', esquivando los fijos, sin huecos. */
+function colocar(items, ocupado, cursor, limite) {
+  const fijos = ocupado.slice(), cola = items.slice(), puestos = [], afuera = [];
+  while (cola.length) {
+    let i = cola.findIndex((it) => it.comida && it.desde && it.desde <= cursor);
+    if (i < 0) i = cola.findIndex((it) => !it.desde || it.desde <= cursor);
+    if (i < 0) { const sig = Math.min.apply(null, cola.map((it) => it.desde)); i = cola.findIndex((it) => it.desde === sig); }
+    const it = cola.splice(i, 1)[0];
+    let x = Math.max(cursor, it.desde || 0), mov = true;
+    while (mov) { mov = false; for (const [a, b] of fijos) if (x < b && x + it.dur > a) { x = b; mov = true; } }
+    if (x + it.dur > limite) { afuera.push(it); continue; }
+    puestos.push([it, x, x + it.dur]); fijos.push([x, x + it.dur]);
+    cursor = x + it.dur + (it.dur >= 45 && !it.comida ? 5 * M : 0);
+  }
+  return { puestos, afuera };
+}
+
+/* Reordena TODO lo pendiente del día desde ahora: sin superposiciones, sin huecos, respetando lo fijo. */
+function reordenar(cx, desdeMs) {
+  const vs = vivas(cx);
+  const sue = vs.find((t) => /sue[ñn]o/i.test(t.nombre) && !t.hecho && conHora(t) && ms(t.inicio) > desdeMs);
+  const limite = sue ? ms(sue.inicio) : enHora(cx.dia, "01:00");
+  const esFija = (t) => t.hecho || t.estado === "En progreso" || t.evento || cx.anclados.has(t.id) || FIJO_NOMBRE.test(t.nombre) || !conHora(t);
+  const ocupado = vs.filter((t) => conHora(t) && esFija(t) && !t.hecho && ms(t.fin) > desdeMs).map((t) => [ms(t.inicio), ms(t.fin)])
+    .concat(vs.filter((t) => t.hecho && conHora(t) && ms(t.fin) > desdeMs).map((t) => [ms(t.inicio), ms(t.fin)]));
+  /* comidas que quedaron muy atrás y nunca se reportaron: ya fueron, se sacan */
+  vs.filter((t) => conHora(t) && !esFija(t) && comidaDe(t.nombre) && ms(t.inicio) < desdeMs - 90 * M).forEach((t) => cambiar(cx, t, { archivar: true }));
+  const flex = vivas(cx).filter((t) => conHora(t) && !esFija(t));
+  const orden = (t) => { const i = cx.prioridad.indexOf(t.id); return i >= 0 ? i - 1000 : ms(t.inicio); };
+  flex.sort((a, b) => orden(a) - orden(b));
+  const items = flex.map((t) => { const c = comidaDe(t.nombre); return { t, dur: duracion(t) * M, comida: !!c, desde: c && COMIDA[c] ? enHora(cx.dia, hh(COMIDA[c])) : 0 }; });
+  let { puestos, afuera } = colocar(items, ocupado, r5(desdeMs), limite);
+  /* si no entra todo, primero se caen los bloques flexibles (no los hábitos ni lo que pidió recién) */
+  const sacados = [];
+  while (afuera.some((it) => esHabito(it.t))) {
+    let k = -1;
+    for (let j = items.length - 1; j >= 0; j--) { const it = items[j]; if (!esHabito(it.t) && !it.comida && cx.prioridad.indexOf(it.t.id) < 0) { k = j; break; } }
+    if (k < 0) break;
+    sacados.push(items.splice(k, 1)[0]);
+    ({ puestos, afuera } = colocar(items, ocupado, r5(desdeMs), limite));
+  }
+  afuera = afuera.concat(sacados);
+  puestos.forEach(([it, s, e]) => { if (ms(it.t.inicio) !== s || ms(it.t.fin) !== e) cambiar(cx, it.t, { inicio: aISO(s), fin: aISO(e) }); });
+  afuera.forEach((it) => {
+    if (esHabito(it.t)) { cambiar(cx, it.t, { inicio: cx.dia, fin: cx.dia }); cx.quitados.push(it.t.nombre + " (no entra en el horario, queda pendiente)"); }
+    else { cambiar(cx, it.t, { archivar: true }); cx.quitados.push(it.t.nombre); }
+  });
+}
+
+/* Huecos de más de 30 min entre lo registrado hasta ahora: se marcan 'Sin registrar' (una sola vez) y se pregunta. */
+async function marcarHuecos(cx, ahora) {
+  const reg = vivas(cx).filter((t) => conHora(t) && (t.hecho || t.estado === "En progreso") && !/sue[ñn]o/i.test(t.nombre) && ms(t.inicio) < ahora).sort((a, b) => ms(a.inicio) - ms(b.inicio));
+  if (!reg.length) return;
+  const plan = vivas(cx).filter((t) => conHora(t) && !t.hecho && t.estado !== "En progreso");
+  let cur = ms(reg[0].fin);
+  const tope = Math.min(ahora, ...vivas(cx).filter((t) => t.estado === "En progreso" && conHora(t)).map((t) => ms(t.inicio)).concat([ahora]));
+  const huecos = [];
+  for (const t of reg.slice(1)) { const a = ms(t.inicio); if (a - cur > 30 * M) huecos.push([cur, a]); cur = Math.max(cur, ms(t.fin)); }
+  if (tope - cur > 30 * M) huecos.push([cur, tope]);
+  for (const [a, b] of huecos) {
+    if (plan.some((t) => FIJO_NOMBRE.test(t.nombre) && ms(t.inicio) < b && ms(t.fin) > a)) continue;
+    await crear(cx, { nombre: "Sin registrar", habilidad: "", inicio: aISO(a), fin: aISO(b), min: Math.round((b - a) / M), estado: "Hecho", nota: "Contale al bot qué hiciste y se reemplaza" });
+    cx.sinRegistro.push(hm(a) + " a " + hm(b));
+  }
+}
+
+/* Planificar un día entero (hoy desde ahora, o un día futuro) */
+async function planificarDia(env, p, hoy, ahora) {
+  const dia = p.fecha && /^\d{4}-\d{2}-\d{2}$/.test(p.fecha) ? p.fecha : hoy;
+  const cx = await cargarDia(env, dia);
+  const desp = enHora(dia, p.despertar || "08:00"), dormir = enHora(dia, p.dormir || "00:00");
+  const inicio = dia === hoy ? Math.max(ahora, desp) : desp;
+  if (p.fijos) await procesarFijos(cx, p.fijos.map((f) => Object.assign({ fecha: dia }, f)));
+  /* lo flexible pendiente viejo se reemplaza por el plan nuevo (los hábitos y lo fijo se conservan) */
+  vivas(cx).forEach((t) => { if (!t.hecho && t.estado !== "En progreso" && !t.evento && !cx.anclados.has(t.id) && !FIJO_NOMBRE.test(t.nombre) && !esHabito(t) && conHora(t) && ms(t.inicio) >= inicio - 5 * M) cambiar(cx, t, { archivar: true }); });
+  const lista = [];
+  const quiere = (n) => !vivas(cx).some((t) => comidaDe(t.nombre) === n && (t.hecho || ms(t.inicio || 0) >= inicio - 60 * M)) && !(p.bloques || []).some((b) => comidaDe(b.nombre) === n);
+  if (quiere("desayuno") && inicio <= desp + 30 * M) lista.push({ nombre: "Desayuno", min: 30 });
+  const hab = vivas(cx).filter((t) => esHabito(t) && !t.hecho && t.estado !== "En progreso");
+  const yaHecho = (h) => vivas(cx).some((t) => t.hecho && t.habilidad === h);
+  const habFaltan = Object.keys(HABITOS).filter((h) => h !== "Ejercicio" && !yaHecho(h) && !hab.some((t) => t.habilidad === h) && !(p.bloques || []).some((b) => habDe(b.nombre, b.habilidad) === h) && !(p.sin || []).some((n) => norm(n) === norm(NOMBRE_HABITO[h])));
+  if (habFaltan.indexOf("Espiritual") >= 0) lista.push({ nombre: "Meditar", habilidad: "Espiritual", min: 7 });
+  (p.bloques || []).forEach((b) => {
+    const h = habDe(b.nombre, b.habilidad), total = Math.max(5, Math.round(+b.min || durDefecto(b.nombre, h)));
+    if (h === "Estudios" && total > 95) { let r = total; while (r > 0) { const c = r > 95 ? 50 : r; lista.push({ nombre: b.nombre, habilidad: h, min: c }); r -= c; } }
+    else lista.push({ nombre: b.nombre, habilidad: h, min: total });
+  });
+  if (quiere("almuerzo") && dormir > enHora(dia, "13:00")) lista.push({ nombre: "Almuerzo", min: 40 });
+  if (quiere("cena") && dormir > enHora(dia, "21:00")) lista.push({ nombre: "Cena", min: 40 });
+  habFaltan.filter((h) => h !== "Espiritual").forEach((h) => lista.push({ nombre: NOMBRE_HABITO[h], habilidad: h, min: HABITOS[h] }));
+  const nuevos = [];
+  for (const b of lista) nuevos.push(await crear(cx, { nombre: b.nombre, habilidad: habDe(b.nombre, b.habilidad), min: b.min, inicio: aISO(inicio), fin: aISO(inicio + b.min * M), estado: "Pendientes" }));
+  cx.prioridad = nuevos.map((t) => t.id).concat(hab.map((t) => t.id));
+  /* comidas ancladas a su horario natural; hábitos al final si no se pidieron en otro lugar */
+  const sue = vivas(cx).find((t) => /sue[ñn]o/i.test(t.nombre) && conHora(t));
+  if (sue && !sue.hecho) cambiar(cx, sue, { inicio: aISO(dormir), fin: aISO(dormir + 420 * M), min: 420 });
+  reordenar(cx, inicio);
+  await guardar(cx);
+  return cx;
+}
+
+/* Resumen del día para Telegram y para el prompt */
+function totalesDe(ts) {
+  const out = {};
+  ts.filter((t) => t.hecho && !t.archivado).forEach((t) => { const k = t.habilidad || "Sin habilidad"; out[k] = (out[k] || 0) + (t.min || 0); });
+  return out;
+}
+function agendaTexto(cx, desdeMs, max) {
+  const fut = vivas(cx).filter((t) => conHora(t) && !t.hecho && ms(t.fin) > desdeMs).sort((a, b) => ms(a.inicio) - ms(b.inicio)).slice(0, max || 8);
+  return fut.map((t) => (t.estado === "En progreso" ? "▶️ " : "") + hm(ms(t.inicio)) + "–" + hm(ms(t.fin)) + " " + t.nombre).join("\n");
+}
+
+function prompt(hoy, ahora, tareasHoy, totales, texto, hayAudio, fechaReal, proximas) {
+  const comp = (t) => ({ id: t.id, n: t.nombre, h: t.habilidad, min: t.min, est: t.estado, ini: t.inicio && t.inicio.length > 10 ? horaAR(new Date(ms(t.inicio))) : "sin hora", fin: t.fin && t.fin.length > 10 ? horaAR(new Date(ms(t.fin))) : "" });
+  return [
+    "Sos el agente de agenda de Manu (estudiante y emprendedor en Argentina, habla rioplatense). Tu ÚNICO trabajo es ENTENDER su mensaje y devolverlo estructurado en JSON. NO calcules horarios ni reordenes nada: eso lo hace el sistema con tus datos. Respondé SOLO JSON.",
+    "HOY (día lógico; dura hasta que se duerme, corte 05:00): " + hoy + " (" + diaSemana(hoy) + "). AHORA: " + ahora + " (calendario real " + fechaReal + "). 'Mañana' = " + sumarDias(hoy, 1) + ".",
+    hayAudio ? "El mensaje es el AUDIO adjunto: transcribilo en 'transcripcion' (limpio, sin muletillas)." : "MENSAJE: " + texto,
+    "AGENDA DE HOY (n=nombre, h=habilidad, est=estado, ini/fin en hora argentina): " + JSON.stringify(tareasHoy.map(comp)),
+    "MINUTOS HECHOS HOY POR HABILIDAD: " + JSON.stringify(totales),
+    "PRÓXIMOS DÍAS (parciales, consultas, etc.): " + JSON.stringify((proximas || []).filter((t) => t.evento || /parcial|consulta|cursada|examen/i.test(t.nombre)).slice(0, 15).map((t) => ({ n: t.nombre, dia: (t.inicio || "").slice(0, 10), ini: t.inicio && t.inicio.length > 10 ? horaAR(new Date(ms(t.inicio))) : "" }))),
+    "HABILIDADES: Estudios (facultad, módulos, consultas de materias, cursada), Trabajo (negocio, agencia, WhatsApp, historias, videos, clientes, ventas), Lectura, Espiritual (meditar), Finanzas (estudiar inversiones), Marca Personal, Ejercicio (gimnasio, bici, correr), Sueño (dormir, siesta). Comidas, traslados y tiempo muerto van SIN habilidad (\"\").",
+    "NOMBRES: estudio = 'Estudio <Materia>' (ej. 'Estudio Informática'); trabajo genérico = 'Trabajo Diario', o el nombre concreto si lo dice ('Programar historias'); hábitos: 'Meditar', 'Lectura', 'Estudiar Inversiones', 'Marca Personal', 'Ejercicio'; comidas: 'Desayuno','Almuerzo','Merienda','Cena'; 'Traslado a X'; 'Tiempo muerto' para cuando dice que estuvo dando vueltas, deambulando o sin hacer nada; 'Siesta' (Sueño). Si se refiere a una tarea de la agenda, usá su mismo nombre.",
+    "CAMPOS (todos opcionales):",
+    "- hecho: lo que YA hizo (verbo en pasado: 'terminé', 'estuve', 'hice', 'recién termino'), en ORDEN CRONOLÓGICO, un ítem por actividad: {nombre, habilidad, min, desde, hasta, detalle}. min = minutos que dijo (1 hora y cuarto = 75). desde/hasta = horas 'HH:MM' SOLO si las dijo ('de 9 a 10:30' -> desde '09:00', hasta '10:30'; '(ahora)' o 'recién' en el último = no pongas hasta). Si dice 'terminé X' sin minutos ni horas, dejá min en null (el sistema usa desde cuándo arrancó). Si dice que en el medio estuvo dando vueltas sin decir cuánto, agregá {nombre:'Tiempo muerto'} en su lugar del orden, sin min. detalle = lo que dijo, literal y breve (ej. 'programé historias, contesté consultas, cálculos de ventas').",
+    "- ahora: lo que empieza ahora o en unos minutos: {nombre, habilidad, min, en}. en = minutos hasta que arranca ('en 5' -> 5, 'descanso 5 y vuelvo' -> 5, 'ya arranqué' -> 0). min = duración si la dijo ('de 1 hora y cuarto' -> 75), si no null.",
+    "- despues: lo que dice que hace después, EN ORDEN: [{nombre, habilidad, min}]. 'estudiar informática full' -> [{nombre:'Estudio Informática', min:null}].",
+    "- fijos: cosas con hora fija nuevas o cambiadas: [{nombre, habilidad, fecha (AAAA-MM-DD, por defecto hoy), desde 'HH:MM', hasta 'HH:MM' o min, nota}]. Ej. 'a las 15:20 salgo para la facu' -> {nombre:'Traslado a la facultad', desde:'15:20', min:40}; 'el lunes tengo parcial de física en el aula 14' -> {nombre:'Parcial Física', fecha:..., desde:'08:00', min:120, nota:'Aula 14'} (si no da la hora, preguntala en respuesta).",
+    "- no_hace: nombres de tareas de la agenda de hoy que dice que NO va a hacer hoy (ej. 'no voy al gimnasio' -> ['Ejercicio']).",
+    "- planificar: SOLO si pide armar/organizar/planificar un día (o 'reorganizame el día', 'acomodame todo'): {fecha, despertar 'HH:MM' (def. 08:00), dormir 'HH:MM' (def. 00:00), fijos:[...], bloques:[{nombre, habilidad, min}] EN EL ORDEN en que conviene hacerlos, sin, nota}. Pensalo como un planificador experto: priorizá la materia del parcial más cercano; bloques de estudio de 50-95 min intercalados con trabajo; si pide trabajo mínimo, poné solo lo esencial (WhatsApp/consultas 20-30, historias 20, programar videos 30) repartido cada 1-2 horas entre estudio; incluí ejercicio si va al gimnasio (60-75 min, como fijo si da hora); si va a la facultad, traslados de ~40 min (como fijos). NO pongas comidas ni hábitos salvo que dé horas: el sistema los agrega solo. sin = hábitos que dice que no hace ese día. Para 'hoy' planificá solo desde AHORA.",
+    "- estado: correcciones explícitas que pide ('volvelo a pendientes', 'eso no lo terminé'): [{id, estado:'Pendientes'|'En progreso'|'Hecho'}] con ids de la agenda.",
+    "- respuesta: texto corto (1-3 líneas), rioplatense, sin markdown. NO listes horarios (el sistema agrega la agenda). Si pregunta algo (cuánto estudió, qué le queda, dónde era algo), respondé con los datos de arriba; si no está en los datos, decí que no lo tenés.",
+    "EJEMPLOS:",
+    "'recién termino un módulo de informática. Descanso 5 y vuelvo con otro de 1 hora y cuarto' -> {\"hecho\":[{\"nombre\":\"Estudio Informática\",\"habilidad\":\"Estudios\",\"min\":null}],\"ahora\":{\"nombre\":\"Estudio Informática\",\"habilidad\":\"Estudios\",\"min\":75,\"en\":5}}",
+    "'de 9 a 10:30 estudié informática, de 10:30 a 11 deambulando y de 11 a 12:30 (ahora) informática' -> {\"hecho\":[{\"nombre\":\"Estudio Informática\",\"habilidad\":\"Estudios\",\"desde\":\"09:00\",\"hasta\":\"10:30\"},{\"nombre\":\"Tiempo muerto\",\"desde\":\"10:30\",\"hasta\":\"11:00\"},{\"nombre\":\"Estudio Informática\",\"habilidad\":\"Estudios\",\"desde\":\"11:00\"}]}",
+    "'recién termino, 35 minutos con el negocio, en el medio estuve dando vueltas. Ahora en 5 estudio física' -> {\"hecho\":[{\"nombre\":\"Tiempo muerto\"},{\"nombre\":\"Trabajo Diario\",\"habilidad\":\"Trabajo\",\"min\":35,\"detalle\":\"negocio\"}],\"ahora\":{\"nombre\":\"Estudio Física\",\"habilidad\":\"Estudios\",\"en\":5}}",
+    "'terminé la consulta de física, fueron 90 minutos; vuelvo a casa, media hora, y después media hora de negocio y estudio informática' -> {\"hecho\":[{\"nombre\":\"Consulta Física\",\"habilidad\":\"Estudios\",\"min\":90}],\"ahora\":{\"nombre\":\"Traslado a casa\",\"min\":30,\"en\":0},\"despues\":[{\"nombre\":\"Trabajo Diario\",\"habilidad\":\"Trabajo\",\"min\":30},{\"nombre\":\"Estudio Informática\",\"habilidad\":\"Estudios\"}]}",
+    "'ahora almuerzo, a las 15:20 salgo para la facu, consulta de física a las 16, vuelvo y estudio informática full. No voy al gimnasio' -> {\"ahora\":{\"nombre\":\"Almuerzo\",\"min\":30,\"en\":0},\"fijos\":[{\"nombre\":\"Traslado a la facultad\",\"desde\":\"15:20\",\"hasta\":\"16:00\"},{\"nombre\":\"Consulta Física\",\"habilidad\":\"Estudios\",\"desde\":\"16:00\",\"hasta\":\"17:30\"},{\"nombre\":\"Traslado a casa\",\"desde\":\"17:30\",\"min\":40}],\"despues\":[{\"nombre\":\"Estudio Informática\",\"habilidad\":\"Estudios\"}],\"no_hace\":[\"Ejercicio\"]}",
+    "'dormí la siesta, media hora' -> {\"hecho\":[{\"nombre\":\"Siesta\",\"habilidad\":\"Sueño\",\"min\":30}]}",
+    "FORMATO: {\"transcripcion\":\"\",\"hecho\":[],\"ahora\":null,\"despues\":[],\"fijos\":[],\"no_hace\":[],\"planificar\":null,\"estado\":[],\"respuesta\":\"\"}"
+  ].join("\n");
+}
+
 function resumen(tareas, hoy) {
   const porDia = {};
   tareas.filter((t) => t.hecho && t.inicio).forEach((t) => {
@@ -188,46 +469,6 @@ function resumen(tareas, hoy) {
 }
 
 /* ---------- Gemini ---------- */
-function prompt(hoy, ahora, tareasHoy, tareasSem, texto, hayAudio, proximas, fechaReal) {
-  const comp = (t) => ({ id: t.id, n: t.nombre, h: t.habilidad, min: t.min, ok: t.hecho, est: t.estado, ini: t.inicio, fin: t.fin, d: (t.desc || "").slice(-400) });
-  return [
-    "Sos el agente de Manu (estudiante en Argentina, UTC-3, habla en rioplatense). Maneja su RPG de Notion: cada tarea tiene una Habilidad y una duración real en minutos; al marcarla Hecho se le suma XP a la habilidad. Respondé SOLO JSON.",
-    "HOY (día lógico de Manu): " + hoy + " (" + diaSemana(hoy) + "). AHORA: " + ahora + " del calendario real " + (fechaReal || hoy) + ".",
-    "DÍA LÓGICO: el día de Manu NO termina a las 00:00 sino cuando se duerme (corte a las 0" + HORA_CORTE + ":00). Mientras sea entre 00:00 y 0" + HORA_CORTE + ":00, 'hoy' sigue siendo " + hoy + " y 'mañana' es " + sumarDias(hoy, 1) + ". Las tareas de madrugada que pertenecen a HOY llevan en inicio/fin la fecha real del calendario (" + sumarDias(hoy, 1) + "THH:MM) pero cuentan como del día " + hoy + ". Si dice 'dejalo dentro del día de hoy / del " + hoy.slice(8) + "/" + hoy.slice(5, 7) + "', hacelo así y confirmá la hora real.",
-    hayAudio ? "El mensaje de Manu es el AUDIO adjunto (puede tener muletillas y errores de transcripción; interpretá con sentido común). Ponelo en 'transcripcion'." : "MENSAJE DE MANU: " + texto,
-    "HABILIDADES VÁLIDAS: " + Object.keys(HAB).join(", ") + ".",
-    "TAREAS DE HOY (id, n=nombre, h=habilidad, min=duración, ok=completada, est=estado, ini/fin): " + JSON.stringify(tareasHoy.map(comp)),
-    "MINUTOS COMPLETADOS Y TAREAS PENALIZADAS (no hechas a las 23:59; puntos perdidos = minutos x 3) POR DÍA (últimos 7 días): " + JSON.stringify(resumen(tareasSem, hoy)),
-    "PRÓXIMOS DÍAS (ya cargados en Notion, incluyen plantillas como Cursada/Sueño; si coinciden con lo que pide, actualizalas en vez de duplicar): " + JSON.stringify((proximas || []).map(comp)),
-    "PENDIENTES ATRASADAS (no completadas, de días anteriores): " + JSON.stringify(tareasSem.filter((t) => !t.hecho && !t.evento && t.inicio && t.inicio.slice(0, 10) < hoy).slice(-30).map(comp)),
-    "TAREAS DE LA SEMANA (resumen): " + JSON.stringify(tareasSem.filter((t) => t.inicio && t.inicio.slice(0, 10) !== hoy).slice(-60).map(comp)),
-    "",
-    "REGLAS:",
-    "- Si cuenta algo que hizo: buscá la tarea de hoy que corresponde y actualizala (op 'actualizar', estado 'Hecho', min = minutos REALES que dijo). Si no existe, creala (op 'crear') con inicio y fin reales (formato AAAA-MM-DDTHH:MM, hora argentina; si no da horas, encadená hacia atrás desde ahora) y estado 'Hecho'. min = minutos reales.",
-    "- Nunca marques Hecho lo que dice que NO hizo. Si no queda claro el tiempo, preguntá UNA cosa y no cambies nada.",
-    "- Kanban: 'estoy con X' / 'empiezo X' = X pasa a 'En progreso' con inicio ahora, y la que estaba 'En progreso' antes pasa a 'Hecho' si la terminó o a 'Pendientes' si la dejó a medias (si no está claro, a 'Pendientes'). 'Terminé X, ahora voy con Y' = X 'Hecho' con minutos reales, Y 'En progreso'. Solo una tarea 'En progreso' a la vez.",
-    "- 'Cambiame el día a hoy' / 'pasá X para hoy' = actualizar la tarea (op 'actualizar') con inicio y fin de hoy (misma hora si la tenía, si no 'AAAA-MM-DD' de hoy solamente). Sirve para las PENDIENTES ATRASADAS. Nunca muevas tareas ya completadas.",
-    "- 'Empiezo X' = estado 'En progreso' con inicio ahora. Si en el MISMO día ya hay una tarea equivalente (Sueño, Cursada, Trabajo Diario, etc.), actualizala en vez de duplicarla.",
-    "- Si pide armar el día o el resto del día: creá tareas 'Pendientes' con inicio y fin, contiguas, desde ahora hasta ~23:30, con estudio en bloques de 50 min con pausas de 5-10, trabajo en sprints de 40-45 min, comidas máx 40 min, siesta 20 opcional, hábitos (lectura, inversiones, LinkedIn/Marca Personal 20 min, ejercicio). Habilidades de descanso/comida: usá 'Sueño' solo para dormir; para comidas y pausas no crees tareas.",
-    "- Para otro día ('mañana'), calculá la fecha y armalo igual.",
-    "- Si pregunta cómo viene o pide análisis: respondé con los datos de arriba, comparando lo que dijo que hizo con los minutos registrados; señalá incoherencias (ej. 3 h de trabajo pero solo se nombró una tarea de 1 h), tiempo sin registrar, y qué mejorar. No inventes datos que no estén.",
-    "- Cuando arma un día: respetá clases fijas que diga (ponelas como tareas de 'Estudios' con sus horas exactas), luego repartí estudio según los parciales: más tiempo a la materia con parcial más cerca y más difícil (Cálculo > Informática > Física > Organizaciones). Estudio en bloques de 50 min con pausas de 5-10; trabajo (grabar videos, agencia, WhatsApp máx 10-30 min) en sprints de 40-45 min; alterná estudio y trabajo. Usá como referencia lo que suele hacer según el historial de arriba.",
-    "- Hábitos diarios a incluir: lectura (10-15 min, mañana/mediodía/noche), inversiones 15 min (Finanzas), LinkedIn/Marca Personal 20 min, ejercicio (gimnasio o bici), meditar. Comidas máx 40 min (almuerzo ~13:00, merienda ~17:00, cena ~21:00), siesta 20 min opcional. El gimnasio cierra jueves 21:30 y sábado 13:00: si dice que va al gimnasio, ponelo antes del cierre.",
-    "- REPROGRAMAR a mitad del día ('al final estudié X horas', 'no cursé', 'reorganizame todo'): 1) registrá lo que hizo como tareas reales con minutos reales y estado 'Hecho' (si ya existe la tarea de hoy, actualizala; si no, creala con horas encadenadas hacia atrás desde ahora). 2) Las tareas PENDIENTES de hoy que ya no tienen sentido o quedaron obsoletas, sacalas con op 'borrar' (solo si están 'Pendientes' y no son eventos; JAMÁS borres ni cambies tareas 'Hecho'). 3) Las pendientes que siguen valiendo, reubicalas con op 'actualizar' cambiando inicio y fin. 4) Creá las tareas nuevas que falten, contiguas desde ahora hasta ~23:30, priorizando lo más importante por los parciales para maximizar productividad. 5) Si dice que NO fue a algo fijo (ej. no cursó) NO lo marques Hecho ni lo borres: dejalo pendiente y avisale en la respuesta que a las 23:59 va a quedar penalizado, y que si quiere sacarlo se lo pida. 6) La respuesta resume el nuevo plan por bloques con horas.",
-    "- HÁBITOS DIARIOS (se penalizan a las 23:59 si no se hacen; incluilos SIEMPRE al armar cualquier día): Ejercicio (60 min, habilidad Ejercicio; cuenta gimnasio, bicicleta, correr o cualquier ejercicio, todos los días; si dice que no pudo ir al gimnasio, NO lo marques hecho: queda penalizado salvo que haga otro ejercicio ese día), Lectura (30 min, habilidad Lectura), Estudiar Inversiones (15 min, habilidad Finanzas), Marca Personal (30 min, habilidad Marca Personal) y Meditar (7 min, habilidad Espiritual). Estudio (clases, grupos de estudio, estudio individual, consultas) y Trabajo (negocio y agencia) NO se penalizan por horas no cumplidas: si hizo menos de lo planeado, solo ajustá o sacá las pendientes y mencionalo.",
-    "- TRABAJO (todo lo del negocio y la agencia: grabar videos, hablar con clientes, WhatsApp, paneles, investigar, etc.): NO crees una tarea por actividad. Usá op 'sumar' con {\"op\":\"sumar\",\"min\":MINUTOS,\"detalle\":\"lo que hizo, literal y breve\"}: el sistema suma los minutos a la tarea 'Trabajo Diario' de hoy (queda en Hecho) y guarda el detalle en su descripción. Una acción 'sumar' por cada actividad que cuente (ej. 'media hora grabando videos y 20 min con clientes' = dos acciones: 30 min 'grabar videos' y 20 min 'hablar con clientes'). Al PLANIFICAR, los huecos libres del día se llenan REPARTIDOS EQUITATIVAMENTE entre trabajo y estudio, alternando (aprox. mitad y mitad del tiempo libre): bloques 'Trabajo Diario' (Habilidad Trabajo) y bloques de estudio de la materia más urgente según los parciales (Habilidad Estudios, 45-50 min con pausas), de 45 a 90 min cada uno; no dejes huecos sin usar salvo comidas. Al REPORTAR trabajo hecho usá siempre 'sumar': los minutos van al bloque 'Trabajo Diario' pendiente más próximo (queda en Hecho con los minutos reales) y el detalle literal se guarda en su descripción. DÍA COMPLETO E INTELIGENTE: al armar o reordenar un día no dejes huecos mayores a 15 minutos. Metés comidas (desayuno, almuerzo ~40 min cerca de las 12:30-13:30, merienda opcional, cena ~40 min cerca de las 21:00; creá esas tareas SIN habilidad, solo nombre, inicio, fin y min), una siesta de 20 min si hay lugar después del almuerzo, y pausas cortas. El tiempo libre restante se reparte mezclando trabajo y estudio: nunca más de 90 minutos seguidos de la misma cosa; alterná (ej. estudio 50 / trabajo 45 / estudio 50). Si ya hay un bloque largo de estudio o trabajo, partilo y mezclalo con el otro. Revisá que ningún bloque se superponga con otro. REGLA DE TIEMPO VERBAL (crítica): 'sumar' y el estado Hecho son SOLO para lo que ya pasó ('estuve', 'hice', 'terminé', 'hasta hace un rato'). Si habla en futuro o presente de intención ('ahora me pongo a', 'en 5 minutos arranco', 'voy a trabajar 20 minutos', 'poneme un bloque'), NO sumes ni marques Hecho: creá o actualizá un bloque 'Pendientes' (o 'En progreso' si arranca ya) con inicio y fin planificados (inicio = ahora o cuando dijo que arranca; fin = inicio + minutos dichos), y reordená lo que sigue (estudio, cursada, etc.) para que no se superponga. Recién cuando después diga que lo hizo, se registra con los minutos reales. ESTUDIO POR PORCENTAJES: si Manu dice cómo repartir el estudio (ej. '70% física y 30% informática'), sumá el tiempo de estudio disponible de cada día y dividilo en bloques con nombre literal por materia ('Estudio Física', 'Estudio Informática') respetando esa proporción de minutos, de 45-50 min con pausas, intercalados y sin superponer; cada bloque con Habilidad Estudios. Al reportar, igual que el trabajo: marcá el bloque de esa materia como Hecho con los minutos reales. HORA DE LO REPORTADO: lo que ya hizo termina 'ahora' (o a la hora que diga: agregá \"hasta\":\"HH:MM\" en la acción sumar si dice 'a las 13 estuve media hora...'); el bloque queda ENTRE (fin - minutos) y fin. NO rellenes con bloques ni estires otros bloques el tiempo vacío anterior: si entre el último bloque programado y el comienzo de lo reportado hay un hueco, se deja vacío para no contar tiempo que no corresponde. BLOQUES: si Manu NO dice qué va a hacer, el trabajo va en bloques genéricos 'Trabajo Diario'. Si dice tareas concretas (ej. 'mañana programar videos, contestar consultas, seguimientos, subir historias'), creá bloques con esos nombres literales (Habilidad Trabajo, cada uno con su duración y hora) y no uses 'Trabajo Diario' para ellos. Al reportar: marcá el bloque que corresponde (por nombre, o por la hora si habla del bloque de tal hora) como Hecho con los minutos reales que dijo (si hizo más de una cosa en ese bloque, el total de minutos va al bloque y lo literal en 'detalle'), aunque sean menos o más que lo planificado. Un bloque cuya hora ya pasó y reportó queda cerrado; si después hay más trabajo, creá un bloque nuevo más tarde, acomodado sin superponerse con el resto. Los bloques 'Trabajo Diario' que no se usaron se reprograman, no se penalizan. 'sumar' también sirve para hábitos y otras tareas que hace en pedazos o fuera de lo planificado (ej. 'estuve leyendo 15 min' = {\"op\":\"sumar\",\"min\":15,\"nombre\":\"Lectura\",\"habilidad\":\"Lectura\",\"detalle\":\"leí\"}): suma los minutos a la tarea de hoy con ese nombre (si estaba pendiente queda Hecho con esos minutos reales; si ya estaba hecha, se acumulan) o la crea si no existe. Si lo hizo a una hora distinta de la planificada, después reordená con 'actualizar' los bloques pendientes del día para que no queden superpuestos ni huecos. El campo 'd' de cada tarea trae el detalle ya registrado: usalo para el análisis (comparar lo que dijo que hizo con los minutos).",
-    "- PLANIFICAR UN DÍA (cuando pide armar, planificar u organizar uno: 'mañana', 'el jueves', 'lo que queda de hoy'): pensalo como un planificador experto y entregá el día COMPLETO, no solo lo que mencionó. Pasos: (1) FIJOS primero: cursadas, consultas, parciales, turnos, gimnasio (cierra jueves 21:30 y sábado 13:00; contá ~60-75 min), y los TRASLADOS necesarios (si hay actividad presencial, facultad, gimnasio o salidas, creá antes y después tareas 'Traslado a X' de ~30 min SIN habilidad, salvo que diga que no se mueve de casa o dé otra duración). (2) RUTINA de base: despertar 08:00 si no dice otra hora (desayuno 30-40 min), almuerzo ~13:00 (40 min), siesta 20-30 min después del almuerzo solo si queda un tramo largo libre, merienda opcional, cena ~21:00 (40 min), dormir ~7 h (si el día sigue tarde, no lo pises). (3) HÁBITOS diarios (Meditar 7, Lectura 30, Estudiar Inversiones 15, Marca Personal 30, Ejercicio 60): ubicalos en huecos naturales (meditar a la mañana, lectura a la noche, etc.). (4) LO QUE DIJO QUE HAY QUE HACER ('trabajar lo mínimo indispensable para hacer x, y, z'): estimá cada cosa con esta guía y sumá solo eso en el trabajo del día, sin inflar: grabar un video 45 min, editar video 40, programar videos 30, subir historias 20, responder consultas/WhatsApp 30, seguimientos a clientes 30, buscar contenido o ideas 30, armar un carrusel 60, armar un mensaje o plantilla 15, llamada o reunión 30-60, tarea de agencia/panel 30-45, módulo de estudio 50-95. Si pone una duración, usá esa. Cada cosa nombrada va como bloque con SU NOMBRE literal (Habilidad Trabajo); si no nombra nada, bloques 'Trabajo Diario'. (5) ESTUDIO: el tiempo libre que sobra va a estudiar, priorizando la materia con el parcial más cercano (según PRÓXIMOS DÍAS y lo que dijo), partido en bloques de 50 min con 5-10 min de pausa, nunca más de 90 min seguidos de lo mismo; si dice un reparto (ej. 70/30) respetalo. (6) DESCANSOS: 5-10 min entre bloques largos, y una pausa mayor tras cada 2-3 horas de actividad intensa; los descansos pueden ir como tareas 'Pausa' SIN habilidad o simplemente como aire entre bloques (máx 15 min de aire). (7) VERIFICÁ antes de responder: sin superposiciones, todo dentro del día (hasta ~23:30 salvo que diga otra cosa), comidas y traslados incluidos, duraciones realistas. Si no entra todo, priorizá por urgencia (parcial más cercano > compromisos fijos > lo mínimo de trabajo > hábitos > resto), dejá afuera lo menos importante y decile en una línea qué quedó afuera y por qué. (8) No hagas preguntas: tomá supuestos razonables y nombralos en una sola línea al final ('asumí: despierto 8:00, traslados de 30 min'). La respuesta lista los bloques con hora de inicio-fin, en orden.",
-    "- REGISTRAR LO QUE YA HIZO (regla principal, por encima de 'sumar' y de 'actualizar'): todo lo que cuente en pasado va con op 'registro', UN tramo por actividad, con inicio y fin reales (AAAA-MM-DDTHH:MM), en orden y sin superponerse: {\"op\":\"registro\",\"nombre\":\"Estudio Informática\",\"habilidad\":\"Estudios\",\"inicio\":\"...\",\"fin\":\"...\",\"detalle\":\"lo literal\"}. Cómo sacar las horas: si dice 'de 9 a 10:30' usá esas; 'recién termino, estuve 35 min' => fin = AHORA, inicio = AHORA - 35; 'me levanté 7:30, desayuné, medité y leí hasta 8:30' => repartí ese tramo en desayuno, meditar y lectura con duraciones razonables (si ya hay tareas Hecho de esas cosas, no las dupliques); 'mas o menos' = usá la hora que dijo. Para lo que dice que estuvo 'dando vueltas', 'deambulando', 'al pedo', 'sin hacer nada': registro con nombre 'Tiempo muerto' y SIN habilidad (se mide para mejorar). Si entre dos tramos que cuenta hay un hueco y no dijo qué hizo, NO lo inventes (el sistema le pregunta). El sistema solo reutiliza el bloque planificado de lo mismo, borra los planificados que quedaron cubiertos y corre el resto. Nombres: estudio = 'Estudio <Materia>' (Estudios); trabajo = 'Trabajo Diario' o el nombre concreto (Trabajo); comidas, traslados y tiempo muerto sin habilidad; hábitos con su nombre (Meditar/Espiritual, Lectura/Lectura, Estudiar Inversiones/Finanzas, Marca Personal/Marca Personal, Ejercicio/Ejercicio). No uses 'sumar' si podés armar un tramo con horas. En la respuesta listá en una línea los tramos registrados con sus horas, para que Manu los vea.",
-    "- POSTERGAR / NO HICE: si dice que algo planificado no lo hizo o lo hace más tarde ('no voy a estudiar ahora', 'no fui al gimnasio', 'lo hago después'), NO lo marques Hecho ni lo borres: movelo con 'actualizar' a un hueco posterior de hoy (inicio y fin nuevos). El sistema después corre automáticamente todo lo pendiente para que nada se pise y se haga todo. Si es algo fijo que ya no se puede hacer (gimnasio cerrado, clase pasada), dejalo como está y decíselo.",
-    "- HUECOS: si cuenta qué hizo en un tramo pasado ('de 15 a 17 estudié'), registralo con 'crear' estado Hecho e inicio/fin exactos de ese tramo (o 'actualizar' el bloque pendiente que coincida). Nunca inventes actividades para tapar huecos.",
-    "- DESHACER / CORREGIR: si Manu dice que se equivocó o pide volver una tarea atrás ('volvela a pendientes', 'todavía no terminé', 'no estaba en progreso'), actualizá esa tarea (op 'actualizar') al estado pedido ('Pendientes' o 'En progreso'), aunque estuviera 'Hecho'; al volver a Pendientes o En progreso deja de contar como completada. Esto aplica siempre que él lo pida explícitamente; la regla de no tocar tareas 'Hecho' es solo para cuando reorganizás por tu cuenta.",
-    "- REGLA CRÍTICA: nunca muevas a otro día una tarea que ya está cargada para HOY (ni reutilices las plantillas de hoy para armar mañana). Para armar un día futuro, mirá PRÓXIMOS DÍAS: reutilizá solo las tareas que YA están en ese día; todo lo demás creálo nuevo con op 'crear'. Mover una tarea de hoy a otro día solo si Manu lo pide explícitamente ('pasá X para mañana').",
-    "- Nombres de tareas: sin día de la semana (ej. 'Cursada Física', no 'Cursada Física Miércoles'): si reutilizás una plantilla de otro día, renombrala. En la respuesta SIEMPRE listá el plan completo por bloques con hora de inicio y fin, incluyendo hábitos, y no digas 'quedó todo armado' si faltó algo.",
-    "- Si pide organizar un día futuro, devolvé TODAS las tareas de ese día con inicio y fin (formato AAAA-MM-DDTHH:MM), contiguas y sin superponerse, desde las 7:00 hasta ~23:30, y en la respuesta resumí el plan por bloques con horas.",
-    "- Metas de referencia: ~7 h diarias entre estudio y trabajo. Parciales: Cálculo y Organizaciones 24/11, Informática 27/11, Física 30/11.",
-    "FORMATO: {\"transcripcion\":\"\",\"acciones\":[{\"op\":\"registro|crear|actualizar|borrar|sumar\",\"detalle\":\"solo para sumar\",\"id\":\"solo para actualizar/borrar\",\"nombre\":\"\",\"habilidad\":\"\",\"min\":0,\"inicio\":\"AAAA-MM-DDTHH:MM\",\"fin\":\"AAAA-MM-DDTHH:MM\",\"estado\":\"Pendientes|En progreso|Hecho\",\"nota\":\"\"}],\"respuesta\":\"texto plano corto, sin markdown\"}"
-  ].join("\n");
-}
 async function gemini(env, partes) {
   let ultimo;
   const t0 = Date.now(), PRESUPUESTO = 24000;
@@ -272,74 +513,13 @@ function parseJSON(s) {
 function b64(buf) { let s = "", u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); }
 
 
-/* Garantiza que cada día planificado tenga los 5 hábitos: si Gemini se olvidó alguno, lo agrega en un hueco libre */
-const mm = (hhmm) => parseInt(hhmm.slice(0, 2), 10) * 60 + parseInt(hhmm.slice(3, 5), 10);
-const hh = (m) => pad(Math.floor(m / 60)) + ":" + pad(m % 60);
-function completarHabitos(acciones, sem, hoy) {
-  const extra = [], dias = {};
-  (acciones || []).forEach((a) => { if (a.op === "crear" && a.inicio && a.inicio.length >= 16 && a.estado !== "Hecho") dias[a.inicio.slice(0, 10)] = 1; });
-  Object.keys(dias).forEach((d) => {
-    if (d < hoy) return;
-    const nombresAcc = (acciones || []).filter((a) => a.op !== "borrar" && a.inicio && a.inicio.slice(0, 10) === d).map((a) => a.habilidad || "");
-    const borrados = new Set((acciones || []).filter((a) => a.op === "borrar").map((a) => a.id));
-    const existentes = sem.filter((t) => t.inicio && t.inicio.slice(0, 10) === d && !borrados.has(t.id));
-    const tieneH = (h) => nombresAcc.indexOf(h) >= 0 || existentes.some((t) => t.habilidad === h);
-    const ocupado = [];
-    existentes.forEach((t) => { if (t.inicio.length > 10 && t.fin && t.fin.length > 10) ocupado.push([mm(t.inicio.slice(11, 16)), mm(t.fin.slice(11, 16))]); });
-    (acciones || []).forEach((a) => { if (a.op !== "borrar" && a.inicio && a.fin && a.inicio.slice(0, 10) === d && a.fin.length >= 16) ocupado.push([mm(a.inicio.slice(11, 16)), mm(a.fin.slice(11, 16)) || 1440]); });
-    const ahoraMin = d === hoy ? 0 : 0;
-    Object.keys(HABITOS).forEach((h) => {
-      if (tieneH(h)) return;
-      const dur = HABITOS[h];
-      for (let t = 7 * 60; t + dur <= 23 * 60 + 30; t += 5) {
-        if (t < ahoraMin) continue;
-        if (ocupado.every((o) => t + dur <= o[0] || t >= o[1])) {
-          extra.push({ op: "crear", nombre: NOMBRE_HABITO[h], habilidad: h, min: dur, inicio: d + "T" + hh(t), fin: d + "T" + hh(t + dur), estado: "Pendientes" });
-          ocupado.push([t, t + dur]); return;
-        }
-      }
-    });
-  });
-  return extra;
-}
-
 /* ---------- Telegram ---------- */
 async function tg(env, metodo, body) {
   const r = await fetch("https://api.telegram.org/bot" + env.TELEGRAM_TOKEN + "/" + metodo, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   return r.json();
 }
-const decir = (env, chat, texto) => tg(env, "sendMessage", { chat_id: chat, text: String(texto).slice(0, 4000) });
+const decir = (env, chat, texto, silencioso) => tg(env, "sendMessage", { chat_id: chat, text: String(texto).slice(0, 4000), disable_notification: !!silencioso });
 
-/* Reacomoda los bloques pendientes de hoy para que no se superpongan: respeta lo hecho, lo en progreso y lo fijo (cursada, gimnasio, parcial, consultas) y corre el resto al siguiente hueco libre, sin cambiar duraciones. */
-async function reacomodar(env, hoy, tocados) {
-  const ahora = Date.now(), cinco = 5 * 60e3, finDia0 = Date.parse(sumarDias(hoy, 1) + "T01:00:00" + TZ);
-  let finDia = finDia0;
-  const ts = (await tareasDesde(env, hoy, sumarDias(hoy, 1))).filter((t) => t.inicio && t.inicio.length > 10 && t.fin && diaDe(t) === hoy && !t.evento);
-  const sue = ts.find((t) => /sue[ñn]o/i.test(t.nombre) && !t.hecho); if (sue) finDia = Math.min(finDia0, Date.parse(sue.inicio));
-  const esHabito = (t) => Object.keys(NOMBRE_HABITO).some((h) => NOMBRE_HABITO[h] === t.nombre);
-  const fijo = (t) => (tocados && tocados.has(t.id)) || t.hecho || t.estado === "En progreso" || /cursada|gimnasio|ejercicio|parcial|consulta|clase|sue[ñn]o/i.test(t.nombre);
-  const placed = [];
-  ts.filter(fijo).forEach((t) => placed.push([Date.parse(t.inicio), Math.max(Date.parse(t.fin), t.estado === "En progreso" && t.min ? Date.parse(t.inicio) + t.min * 60e3 : 0)]));
-  const movibles = ts.filter((t) => !fijo(t)).sort((a, b) => Date.parse(a.inicio) - Date.parse(b.inicio));
-  const movidos = [];
-  for (const t of movibles) {
-    const s0 = Date.parse(t.inicio), e0 = Date.parse(t.fin), dur = e0 - s0;
-    if (!(dur > 0)) continue;
-    let x = Math.max(s0, Math.ceil(ahora / cinco) * cinco), cambio = true;
-    while (cambio) { cambio = false; for (const [ps, pe] of placed) { if (x < pe && x + dur > ps) { x = pe; cambio = true; } } }
-    if (x + dur > finDia) {
-      if (!esHabito(t)) { await notion(env, "pages/" + t.id, "PATCH", { archived: true }); movidos.push(t.nombre + " (no entraba, lo saqué)"); continue; }
-      placed.push([s0, e0]); continue;
-    }
-    placed.push([x, x + dur]);
-    if (x !== s0) {
-      await notion(env, "pages/" + t.id, "PATCH", { properties: { "Fecha Inicio": { date: { start: aISO(x) } }, "Fecha Fin": { date: { start: aISO(x + dur) } } } });
-      movidos.push(t.nombre + " → " + horaAR(new Date(x)));
-    }
-  }
-  return movidos;
-}
-/* Plan B cuando Google está saturado: Cloudflare Workers AI (Whisper + Llama). Solo se usa si el Worker tiene el binding "AI". */
 async function conCloudflareAI(env, mkPrompt, texto, audioB64) {
   let tx = texto, trans = "";
   if (audioB64) {
@@ -355,40 +535,30 @@ async function conCloudflareAI(env, mkPrompt, texto, audioB64) {
   r.respuesta = (r.respuesta || "Listo.") + " (usé el plan B porque Google estaba saturado)";
   return r;
 }
-/* Huecos sin registrar: tramos de más de 40 min entre el primer bloque del día y ahora sin nada Hecho ni En progreso. */
-async function huecosSinRegistro(env, hoy) {
-  const ahora = Date.now();
-  const ts = (await tareasDesde(env, hoy, sumarDias(hoy, 1))).filter((t) => t.inicio && t.inicio.length > 10 && t.fin && diaDe(t) === hoy && (t.hecho || t.estado === "En progreso"));
-  const iv = ts.map((t) => [Date.parse(t.inicio), Math.min(Date.parse(t.fin), ahora)]).filter((x) => x[0] < ahora).sort((a, b) => a[0] - b[0]);
-  const out = []; let cur = iv.length ? iv[0][1] : 0;
-  for (const [s0, e0] of iv.slice(1)) { if (s0 - cur > 40 * 60e3) out.push(horaAR(new Date(cur)) + " a " + horaAR(new Date(s0))); cur = Math.max(cur, e0); }
-  if (iv.length && ahora - cur > 40 * 60e3 && !ts.some((t) => t.estado === "En progreso")) out.push(horaAR(new Date(cur)) + " a ahora");
-  return out;
-}
 async function procesar(env, msg) {
   const chat = msg.chat.id;
   if (!env.ALLOWED_CHAT_ID) { await decir(env, chat, "Tu ID de Telegram es " + chat + ". Cargalo en Cloudflare como ALLOWED_CHAT_ID y volvé a escribirme."); return; }
   if (String(chat) !== String(env.ALLOWED_CHAT_ID)) return;
   const audio = msg.voice || msg.audio;
   const texto = (msg.text || msg.caption || "").trim();
-  if (texto === "/start") { await decir(env, chat, "Listo. Mandame un audio o un texto con lo que hiciste, lo que vas a hacer, o pedime que arme el día."); return; }
+  if (texto === "/start") { await decir(env, chat, "Listo. Contame lo que hiciste, lo que hacés ahora y lo que sigue, o pedime que arme el día."); return; }
   if (!audio && !texto) { await decir(env, chat, "Mandame un audio o un texto."); return; }
   await tg(env, "sendChatAction", { chat_id: chat, action: "typing" });
   try {
-    const ahoraD = new Date(), hoy = fechaLogica(ahoraD), ahora = horaAR(ahoraD), fechaReal = fechaAR(ahoraD);
-    const sem = await tareasDesde(env, sumarDias(hoy, -7), sumarDias(hoy, 7));
-    const hoyT = sem.filter((t) => t.inicio && diaDe(t) === hoy);
-    const validos = new Set(sem.map((t) => t.id));
-    const mkPrompt = (tx, hayAudio) => prompt(hoy, ahora, hoyT, sem.filter((t) => t.inicio && diaDe(t) <= hoy), tx, hayAudio, sem.filter((t) => t.inicio && diaDe(t) > hoy), fechaReal);
+    /* la hora es la del momento en que mandó el mensaje, aunque se procese después */
+    const ahoraMs = Math.min(Date.now(), (msg.date || Date.now() / 1000) * 1000 + 60e3);
+    const ahoraD = new Date(ahoraMs), hoy = fechaLogica(ahoraD), ahora = horaAR(ahoraD), fechaReal = fechaAR(ahoraD);
+    const cx = await cargarDia(env, hoy);
+    const proximas = await tareasDesde(env, sumarDias(hoy, 1), sumarDias(hoy, 10));
+    const mkPrompt = (tx, hayAudio) => prompt(hoy, ahora, vivas(cx).filter((t) => !/sin registrar/i.test(t.nombre) || true), totalesDe(cx.ts), tx, hayAudio, fechaReal, proximas);
     const partes = [{ text: mkPrompt(texto, !!audio) }];
     let audioB64 = "";
     if (audio) {
       const f = await tg(env, "getFile", { file_id: audio.file_id });
       if (!f.ok) throw new Error("no pude bajar el audio");
       const buf = await (await fetch("https://api.telegram.org/file/bot" + env.TELEGRAM_TOKEN + "/" + f.result.file_path)).arrayBuffer();
-      const mime = (audio.mime_type || "audio/ogg").replace(/;.*/, "");
       audioB64 = b64(buf);
-      partes.push({ inlineData: { mimeType: mime, data: audioB64 } });
+      partes.push({ inlineData: { mimeType: (audio.mime_type || "audio/ogg").replace(/;.*/, ""), data: audioB64 } });
     }
     let r;
     try { r = await gemini(env, partes); }
@@ -396,18 +566,47 @@ async function procesar(env, msg) {
       if (!env.AI || !e.sat) throw e;
       try { r = await conCloudflareAI(env, mkPrompt, texto, audioB64); } catch (e2) { throw e; }
     }
-    const acc = (r.acciones || []).concat(completarHabitos(r.acciones, sem, hoy));
-    const log = await aplicarAcciones(env, acc, validos, sem, hoy);
-    let movidos = [];
-    if (acc.length) { try { movidos = await reacomodar(env, hoy, log.tocados); } catch (e) { log.push("falló el reacomodo: " + e.message); } }
+    r = r || {};
     let out = "";
     if (audio && r.transcripcion) out += "🎙️ " + r.transcripcion + "\n\n";
-    out += r.respuesta || "Listo.";
-    try { const hs = await huecosSinRegistro(env, hoy); if (hs.length) out += "\n\n🕳️ No tengo nada registrado de " + hs.join(", ") + ". ¿Qué hiciste ahí? Contame y lo anoto (ej: 'de 15 a 17 estudié informática')."; } catch (e) {}
-    if (movidos.length) out += "\n\n🔁 Reacomodé para que no se pisen: " + movidos.join(", ") + ".";
-    const fallas = log.filter((l) => /falló|saltée|ignoré/.test(l));
-    if (fallas.length) out += "\n\n⚠️ " + fallas.join("; ");
-    await decir(env, chat, out);
+    if (r.respuesta) out += r.respuesta + "\n";
+
+    let cxFinal = cx, planOtroDia = null;
+    if (r.planificar && (!r.planificar.fecha || r.planificar.fecha === hoy)) {
+      /* primero registra lo hecho, después arma el resto de hoy */
+      await procesarHecho(cx, r.hecho, ahoraMs);
+      cerrarViejos(cx, ahoraMs);
+      await procesarAhora(cx, r.ahora, ahoraMs);
+      await marcarHuecos(cx, ahoraMs);
+      await guardar(cx);
+      const desde = Math.max(ahoraMs, ...vivas(cx).filter((t) => t.estado === "En progreso" && conHora(t)).map((t) => ms(t.fin)));
+      cxFinal = await planificarDia(env, Object.assign({}, r.planificar, { fecha: hoy }), hoy, desde);
+      cxFinal.log = cx.log.concat(cxFinal.log);
+    } else {
+      await procesarHecho(cx, r.hecho, ahoraMs);
+      cerrarViejos(cx, ahoraMs);
+      await procesarFijos(cx, r.fijos);
+      procesarNoHace(cx, r.no_hace);
+      await procesarAhora(cx, r.ahora, ahoraMs);
+      await procesarDespues(cx, r.despues, ahoraMs);
+      for (const c of r.estado || []) {
+        const t = vivas(cx).find((x) => x.id === c.id);
+        if (t && ["Pendientes", "En progreso", "Hecho"].indexOf(c.estado) >= 0) { cambiar(cx, t, { estado: c.estado }); cx.log.push("↩️ " + t.nombre + " → " + c.estado); }
+      }
+      await marcarHuecos(cx, ahoraMs);
+      const finActual = Math.max(ahoraMs, ...vivas(cx).filter((t) => t.estado === "En progreso" && conHora(t)).map((t) => ms(t.fin)));
+      reordenar(cx, Math.min(finActual, ahoraMs));
+      await guardar(cx);
+      if (r.planificar && r.planificar.fecha) planOtroDia = await planificarDia(env, r.planificar, hoy, ahoraMs);
+    }
+
+    if (cxFinal.log.length) out += "\n" + cxFinal.log.join("\n") + "\n";
+    if (cxFinal.quitados.length) out += "\n⚠️ No entra en el día, lo saqué: " + cxFinal.quitados.join(", ") + "\n";
+    const ag = agendaTexto(cxFinal, ahoraMs, 8);
+    if (ag) out += "\n📋 Lo que sigue:\n" + ag + "\n";
+    if (planOtroDia) out += "\n🗓️ " + diaSemana(planOtroDia.dia) + " " + planOtroDia.dia.slice(8) + "/" + planOtroDia.dia.slice(5, 7) + ":\n" + agendaTexto(planOtroDia, 0, 30) + "\n";
+    if (cx.sinRegistro.length) out += "\n🕳️ No tengo nada de " + cx.sinRegistro.join(", ") + ". ¿Qué hiciste ahí? (lo dejé como 'Sin registrar')";
+    await decir(env, chat, out.trim() || "Listo.");
   } catch (e) {
     const edad = Date.now() / 1000 - (msg.date || 0);
     if (e.sat && edad < 20 * 60) {
@@ -425,8 +624,8 @@ const NOMBRE_HABITO = { "Ejercicio": "Ejercicio", "Lectura": "Lectura", "Finanza
 const PENALIZAR_DESDE = "2026-11-26"; /* el sistema recién arranca mañana: antes de esa fecha no se penaliza */
 async function penalizarDia(env, fecha) {
   if (fecha < PENALIZAR_DESDE) return { n: 0, pts: 0, lista: [], plan: 0, hecho: 0, omitido: true };
-  const ts = await tareasDesde(env, fecha, fecha);
-  const delDia = ts.filter((t) => t.inicio && t.inicio.slice(0, 10) === fecha && !t.evento);
+  const ts = await tareasDesde(env, fecha, sumarDias(fecha, 1));
+  const delDia = ts.filter((t) => t.inicio && diaDe(t) === fecha && !t.evento && !/sin registrar|tiempo muerto/i.test(t.nombre));
   let n = 0, pts = 0; const lista = [];
   for (const h of Object.keys(HABITOS)) {
     const mias = delDia.filter((t) => t.habilidad === h);
@@ -470,10 +669,11 @@ async function asegurarHabitos(env, desdeFecha, dias) {
 async function resumenSemanal(env) {
   const hoy = fechaAR(new Date()), desde = sumarDias(hoy, -6);
   const ts = await tareasDesde(env, desde, hoy);
-  const xp = {}, perdidos = {}, tareasPerdidas = [];
+  const xp = {}, perdidos = {}, tareasPerdidas = [], muerto = { tiempo_muerto: 0, sin_registrar: 0 };
   ts.forEach((t) => {
     const h = t.habilidad || "?";
-    if (t.hecho) xp[h] = (xp[h] || 0) + (t.min || 0) * 3;
+    if (t.hecho && t.habilidad) xp[h] = (xp[h] || 0) + (t.min || 0) * 3;
+    if (t.hecho && /tiempo muerto|sin registrar/i.test(t.nombre)) muerto[/sin/i.test(t.nombre) ? "sin_registrar" : "tiempo_muerto"] += t.min || 0;
     if (t.pen) { perdidos[h] = (perdidos[h] || 0) + (t.perdidos || 0); tareasPerdidas.push(t.nombre + " (" + (t.inicio || "").slice(5, 10) + ")"); }
   });
   const sueno = {};
@@ -485,10 +685,10 @@ async function resumenSemanal(env) {
     lineaSueno = "\n😴 Sueño: promedio " + hs(prom) + " por día (" + sd.length + " días registrados). Más dormiste: " + mas.slice(5) + " con " + hs(sueno[mas]) + ". Menos dormiste: " + menos.slice(5) + " con " + hs(sueno[menos]) + ".";
   }
   const totXP = Object.values(xp).reduce((a, b) => a + b, 0), totP = Object.values(perdidos).reduce((a, b) => a + b, 0);
-  const datos = { desde, hasta: hoy, xp_ganado_aprox_por_habilidad: xp, total_xp: totXP, puntos_perdidos_por_habilidad: perdidos, total_puntos_perdidos: totP, tareas_no_hechas: tareasPerdidas.slice(0, 25), min_hechos_por_dia: resumen(ts, hoy) };
+  const datos = { desde, hasta: hoy, xp_ganado_aprox_por_habilidad: xp, total_xp: totXP, puntos_perdidos_por_habilidad: perdidos, total_puntos_perdidos: totP, minutos_tiempo_muerto_y_sin_registrar: muerto, tareas_no_hechas: tareasPerdidas.slice(0, 25), min_hechos_por_dia: resumen(ts, hoy) };
   let analisis = "";
   try {
-    const r = await gemini(env, [{ text: "Sos el agente de Manu (rioplatense, directo). Escribí el resumen semanal en texto plano, sin markdown, máx 12 líneas: cuánto XP ganó, cuántos puntos perdió, en qué habilidad más, qué tareas no hizo, un diagnóstico honesto (¿se dedicó a lo importante? ¿hubo parciales esta semana? Cálculo y Organizaciones 24/11, Informática 27/11, Física 30/11) y 2 cosas concretas para mejorar la próxima semana. No inventes. Datos: " + JSON.stringify(datos) + '\nRespondé JSON: {"respuesta":""}' }]);
+    const r = await gemini(env, [{ text: "Sos el agente de Manu (rioplatense, directo). Escribí el resumen semanal en texto plano, sin markdown, máx 12 líneas: cuánto XP ganó, cuántos puntos perdió, en qué habilidad más, qué tareas no hizo, cuánto tiempo muerto o sin registrar tuvo, un diagnóstico honesto (¿se dedicó a lo importante? ¿hubo parciales esta semana? Cálculo y Organizaciones 24/11, Informática 27/11, Física 30/11) y 2 cosas concretas para mejorar la próxima semana. No inventes. Datos: " + JSON.stringify(datos) + '\nRespondé JSON: {"respuesta":""}' }]);
     analisis = r.respuesta || "";
   } catch (e) {}
   if (!analisis) analisis = "XP ganado: " + totXP + ". Puntos perdidos: " + totP + ". No hechas: " + (tareasPerdidas.join(", ") || "ninguna") + ".";
@@ -500,13 +700,15 @@ export default {
     if (!env.ALLOWED_CHAT_ID) return;
     ctx.waitUntil((async () => {
       try {
-        if (event.cron === "59 2 * * *") {
-          const r = await penalizarDia(env, fechaAR(new Date(Date.now() - 10 * 60e3)));
+        if (event.cron === "0 8 * * *" || event.cron === "59 2 * * *") {
+          /* 0 8 UTC = 05:00 en Argentina: cierra el día lógico anterior (incluye lo que hizo de madrugada) */
+          if (event.cron === "59 2 * * *") return;
+          const r = await penalizarDia(env, fechaLogica(new Date(Date.now() - 10 * 60e3)));
           if (r.omitido) return;
           let m = "⏰ Cierre del día: ";
           m += r.n ? "hábitos sin cumplir: " + r.lista.join(", ") + " (" + r.pts + " puntos perdidos)." : "cumpliste todos tus hábitos, sin penalización.";
           if (r.plan) m += "\nEstudio y trabajo: hiciste " + Math.round(r.hecho / 6) / 10 + " h de " + Math.round(r.plan / 6) / 10 + " h planificadas (esto no penaliza).";
-          await decir(env, env.ALLOWED_CHAT_ID, m);
+          await decir(env, env.ALLOWED_CHAT_ID, m, true);
         } else if (event.cron === "0 9 * * *") {
           await asegurarHabitos(env, fechaAR(new Date()), 3);
         } else if (event.cron === "0 1 * * 1") {
