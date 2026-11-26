@@ -118,6 +118,9 @@ async function aplicarAcciones(env, acciones, validos, sem, hoy) {
         }
       } else if (a.op === "crear") {
         if (!a.nombre || ((!a.habilidad || !HAB[a.habilidad]) && !/almuerzo|cena|merienda|desayuno|siesta|pausa|descanso|colaci|traslado|viaje|ducha|aseo/i.test(a.nombre))) { log.push("saltée una tarea sin nombre o habilidad válida"); continue; }
+        const diaA = a.inicio && a.inicio.length >= 16 ? diaDe({ inicio: fechaNotion(a.inicio) }) : (a.inicio || hoy).slice(0, 10);
+        const dup = (sem || []).find((t) => t.nombre === a.nombre && !t.hecho && t.inicio && diaDe(t) === diaA);
+        if (dup) { await notion(env, "pages/" + dup.id, "PATCH", { properties: propsDe(a) }); if (a.inicio) log.tocados.add(dup.id); log.push("actualicé " + a.nombre + " (ya existía)"); continue; }
         const pgc = await notion(env, "pages", "POST", { parent: { database_id: DB }, properties: propsDe(a) });
         if (a.inicio && pgc && pgc.id) log.tocados.add(pgc.id);
         log.push("creé " + a.nombre);
