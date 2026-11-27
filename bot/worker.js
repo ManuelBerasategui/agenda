@@ -106,7 +106,7 @@ const enHora = (dia, hhmm) => {
   const h = +m[1], mi = +(m[2] || 0), f = h < HORA_CORTE ? sumarDias(dia, 1) : dia;
   return Date.parse(f + "T" + pad(h) + ":" + pad(mi) + ":00" + TZ);
 };
-const SIN_HAB = /desayuno|almuerzo|merienda|cena|comida|traslado|colectivo|bondi|viaje|tiempo muerto|sin registrar|pausa|descanso|ducha/i;
+const SIN_HAB = /desayuno|almuerzo|merienda|cena|comida|traslado|colectivo|bondi|viaje|tiempo muerto|sin registrar|pausa|descanso|ducha|social|caf[eé]|amig|primo|familia|novia|salida|juntada|compras|tr[aá]mite|super|mandado/i;
 const REGLAS_HAB = [
   [/sue[ñn]o|siesta|dorm/i, "Sueño"], [/medit/i, "Espiritual"], [/inversi|finanz/i, "Finanzas"],
   [/marca personal|linkedin/i, "Marca Personal"], [/lectura|leer|le[ií]|libro/i, "Lectura"],
@@ -120,6 +120,7 @@ function habDe(nombre, hab) {
   for (const [re, h] of REGLAS_HAB) if (re.test(nombre || "")) return h;
   return "";
 }
+const CATEGORIA = (n) => /social|caf[eé]|amig|primo|familia|novia|salida|juntada/i.test(n) ? "Social" : /tiempo muerto/i.test(n) ? "Tiempo muerto" : /sin registrar/i.test(n) ? "Sin registrar" : /compras|tr[aá]mite|super|mandado/i.test(n) ? "Compras y trámites" : /traslado|colectivo|bondi|viaje/i.test(n) ? "Traslados" : /desayuno|almuerzo|merienda|cena|comida/i.test(n) ? "Comidas" : null;
 const MATERIA = /f[ií]sica|inform[aá]tica|c[aá]lculo|organizaci|ingenier|qu[ií]mica|algebra|álgebra|dibujo/i;
 const COMIDA = { desayuno: 0, almuerzo: 12 * 60 + 30, merienda: 17 * 60, cena: 20 * 60 + 30 };
 const comidaDe = (n) => { const k = Object.keys(COMIDA).find((c) => norm(n).includes(c)); return k || null; };
@@ -304,6 +305,7 @@ function procesarFinDia(cx, ahora, dormirHHMM) {
 async function procesarAhora(cx, it, ahora) {
   if (!it || !it.nombre) return;
   const hab = habDe(it.nombre, it.habilidad);
+  if (hab === "Estudios" && it.min > 95) { const n = Math.ceil(it.min / 95), c = Math.round(it.min / n); cx.resto = Array.from({ length: n - 1 }, () => Object.assign({}, it, { min: c })); it = Object.assign({}, it, { min: c }); }
   const s = ahora + Math.max(0, +it.en || 0) * M;
   const cand = vivas(cx).filter((t) => !t.hecho && parecido(t, it.nombre, hab)).sort((a, b) => (b.estado === "En progreso") - (a.estado === "En progreso") || Math.abs((conHora(a) ? ms(a.inicio) : s) - s) - Math.abs((conHora(b) ? ms(b.inicio) : s) - s))[0];
   const min = it.min > 0 ? Math.round(it.min) : cand ? duracion(cand) : durDefecto(it.nombre, hab);
@@ -321,6 +323,7 @@ async function procesarDespues(cx, items, ahora) {
   for (const it of items || []) {
     if (!it || !it.nombre) continue;
     const hab = habDe(it.nombre, it.habilidad);
+    if (hab === "Estudios" && it.min > 95) { const n = Math.ceil(it.min / 95), c = Math.round(it.min / n); for (let k = 0; k < n; k++) await procesarDespues(cx, [Object.assign({}, it, { min: c })], ahora); continue; }
     let t = vivas(cx).find((x) => !x.hecho && x.estado !== "En progreso" && !x.usado && !cx.anclados.has(x.id) && parecido(x, it.nombre, hab));
     const min = it.min > 0 ? Math.round(it.min) : t ? duracion(t) : durDefecto(it.nombre, hab);
     if (t) cambiar(cx, t, { min });
@@ -476,6 +479,8 @@ function prompt(hoy, ahora, tareasHoy, totales, texto, hayAudio, fechaReal, prox
     "AGENDA DE HOY (n=nombre, h=habilidad, est=estado, ini/fin en hora argentina): " + JSON.stringify(tareasHoy.map(comp)),
     "AYER (" + sumarDias(hoy, -1) + "): " + JSON.stringify((ayerT || []).map((t) => ({ n: t.nombre, est: t.estado, pen: !!t.pen, min: t.min, ini: t.inicio && t.inicio.length > 10 ? horaAR(new Date(ms(t.inicio))) : "sin hora" }))),
     "OTROS DÍAS: si cuenta algo de ayer u otro día ('ayer leí a la mañana', 'lo de física de ayer sí lo estudié'), ponelo en hecho o corregir con fecha:'AAAA-MM-DD' de ESE día. Si un hábito quedó penalizado pero dice que sí lo hizo, va en hecho con esa fecha (el sistema le saca la penalización).",
+    "SOCIAL Y OTROS (sin habilidad, se miden igual): cafés, salidas, amigos, familia -> nombre 'Social: <detalle corto>' (ej. 'Social: café con mi primo'); compras o trámites -> 'Compras'; viajes -> 'Traslado a X'. NO uses 'Tiempo muerto' para lo social ni para compras: tiempo muerto es solo dar vueltas sin hacer nada. Nunca pongas compras como trabajo.",
+    "HASTA QUÉ HORA: si dice hasta qué hora se queda ('me quedo hasta las 2'), poné dormir:'02:00' (sin fin_del_dia). Si da un total de estudio en módulos ('dos módulos, 2 horas y media'), poné un ítem por módulo con sus minutos (75 y 75). 'Otros módulos más' sin cantidad: agregá módulos de 50-75 min hasta la hora que dijo.",
     "SUEÑO: siempre registralo cuando lo cuente, es clave para medir. 'me acosté 22:40 y me levanté 5:45' -> hecho {nombre:'Sueño', habilidad:'Sueño', desde:'22:40', hasta:'05:45', fecha: el día en que se acostó (si se acostó después de medianoche, igual es el día anterior)}. 'me levanté a las 5:45' sin decir cuándo se acostó: preguntalo en respuesta.",
     "MINUTOS HECHOS HOY POR HABILIDAD: " + JSON.stringify(totales),
     "PRÓXIMOS DÍAS (parciales, consultas, etc.): " + JSON.stringify((proximas || []).filter((t) => t.evento || /parcial|consulta|cursada|examen/i.test(t.nombre)).slice(0, 15).map((t) => ({ n: t.nombre, dia: (t.inicio || "").slice(0, 10), ini: t.inicio && t.inicio.length > 10 ? horaAR(new Date(ms(t.inicio))) : "" }))),
@@ -653,7 +658,16 @@ async function procesar(env, msg) {
       await procesarFijos(cx, r.fijos);
       procesarNoHace(cx, r.no_hace);
       await procesarAhora(cx, r.ahora, ahoraMs);
-      await procesarDespues(cx, r.despues, ahoraMs);
+      await procesarDespues(cx, (cx.resto || []).concat(r.despues || []), ahoraMs);
+      /* "me quedo hasta las 2": el día se estira hasta esa hora */
+      if (r.dormir && !r.fin_del_dia) {
+        const d = enHora(hoy, r.dormir);
+        if (!isNaN(d) && d > ahoraMs) {
+          let sue = vivas(cx).find((t) => /sue[ñn]o/i.test(t.nombre) && !t.hecho);
+          if (sue) cambiar(cx, sue, { inicio: aISO(d), fin: aISO(d + 420 * M), min: 420 });
+          else await crear(cx, { nombre: "Sueño", habilidad: "Sueño", inicio: aISO(d), fin: aISO(d + 420 * M), min: 420, estado: "Pendientes" });
+        }
+      }
       for (const c of r.estado || []) {
         const t = vivas(cx).find((x) => x.id === c.id);
         if (t && ["Pendientes", "En progreso", "Hecho"].indexOf(c.estado) >= 0) { cambiar(cx, t, { estado: c.estado }); cx.log.push("↩️ " + t.nombre + " → " + c.estado); }
@@ -740,11 +754,12 @@ async function asegurarHabitos(env, desdeFecha, dias) {
 async function resumenSemanal(env) {
   const hoy = fechaAR(new Date()), desde = sumarDias(hoy, -6);
   const ts = await tareasDesde(env, desde, hoy);
-  const xp = {}, perdidos = {}, tareasPerdidas = [], muerto = { tiempo_muerto: 0, sin_registrar: 0 };
+  const xp = {}, perdidos = {}, tareasPerdidas = [], muerto = {};
   ts.forEach((t) => {
     const h = t.habilidad || "?";
     if (t.hecho && t.habilidad) xp[h] = (xp[h] || 0) + (t.min || 0) * 3;
-    if (t.hecho && /tiempo muerto|sin registrar/i.test(t.nombre)) muerto[/sin/i.test(t.nombre) ? "sin_registrar" : "tiempo_muerto"] += t.min || 0;
+    const cat = t.hecho && !t.habilidad ? CATEGORIA(t.nombre) : null;
+    if (cat) muerto[cat] = (muerto[cat] || 0) + (t.min || 0);
     if (t.pen) { perdidos[h] = (perdidos[h] || 0) + (t.perdidos || 0); tareasPerdidas.push(t.nombre + " (" + (t.inicio || "").slice(5, 10) + ")"); }
   });
   const sueno = {};
@@ -756,10 +771,10 @@ async function resumenSemanal(env) {
     lineaSueno = "\n😴 Sueño: promedio " + hs(prom) + " por día (" + sd.length + " días registrados). Más dormiste: " + mas.slice(5) + " con " + hs(sueno[mas]) + ". Menos dormiste: " + menos.slice(5) + " con " + hs(sueno[menos]) + ".";
   }
   const totXP = Object.values(xp).reduce((a, b) => a + b, 0), totP = Object.values(perdidos).reduce((a, b) => a + b, 0);
-  const datos = { desde, hasta: hoy, xp_ganado_aprox_por_habilidad: xp, total_xp: totXP, puntos_perdidos_por_habilidad: perdidos, total_puntos_perdidos: totP, minutos_tiempo_muerto_y_sin_registrar: muerto, tareas_no_hechas: tareasPerdidas.slice(0, 25), min_hechos_por_dia: resumen(ts, hoy) };
+  const datos = { desde, hasta: hoy, xp_ganado_aprox_por_habilidad: xp, total_xp: totXP, puntos_perdidos_por_habilidad: perdidos, total_puntos_perdidos: totP, minutos_por_categoria_sin_habilidad: muerto, tareas_no_hechas: tareasPerdidas.slice(0, 25), min_hechos_por_dia: resumen(ts, hoy) };
   let analisis = "";
   try {
-    const r = await gemini(env, [{ text: "Sos el agente de Manu (rioplatense, directo). Escribí el resumen semanal en texto plano, sin markdown, máx 12 líneas: cuánto XP ganó, cuántos puntos perdió, en qué habilidad más, qué tareas no hizo, cuánto tiempo muerto o sin registrar tuvo, un diagnóstico honesto (¿se dedicó a lo importante? ¿hubo parciales esta semana? Cálculo y Organizaciones 24/11, Informática 27/11, Física 30/11) y 2 cosas concretas para mejorar la próxima semana. No inventes. Datos: " + JSON.stringify(datos) + '\nRespondé JSON: {"respuesta":""}' }]);
+    const r = await gemini(env, [{ text: "Sos el agente de Manu (rioplatense, directo). Escribí el resumen semanal en texto plano, sin markdown, máx 12 líneas: cuánto XP ganó, cuántos puntos perdió, en qué habilidad más, qué tareas no hizo, cuánto tiempo dedicó a lo social (cafés, amigos), compras, traslados, comidas, tiempo muerto y sin registrar (en horas, con una línea de lectura honesta), un diagnóstico honesto (¿se dedicó a lo importante? ¿hubo parciales esta semana? Cálculo y Organizaciones 24/11, Informática 27/11, Física 30/11) y 2 cosas concretas para mejorar la próxima semana. No inventes. Datos: " + JSON.stringify(datos) + '\nRespondé JSON: {"respuesta":""}' }]);
     analisis = r.respuesta || "";
   } catch (e) {}
   if (!analisis) analisis = "XP ganado: " + totXP + ". Puntos perdidos: " + totP + ". No hechas: " + (tareasPerdidas.join(", ") || "ninguna") + ".";
