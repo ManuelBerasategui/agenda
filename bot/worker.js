@@ -187,6 +187,7 @@ async function registrar(cx, it, s, e) {
   const a = { inicio: aISO(s), fin: aISO(e), min, estado: "Hecho" };
   if (it.detalle) a.nota = it.detalle;
   let t = cand[0];
+  if (t && t.pen) { a.penalizado = false; a.perdidos = 0; t.pen = false; }
   if (t) cambiar(cx, t, a);
   else t = await crear(cx, Object.assign({ nombre, habilidad: hab }, a));
   t.usado = true; cx.anclados.add(t.id);
@@ -204,12 +205,19 @@ async function registrar(cx, it, s, e) {
 async function procesarHecho(cx, items, ahora) {
   const L = (items || []).filter((x) => x && x.nombre);
   if (!L.length) return;
+  /* "desayuné hasta 6:30, después informática 20 min": lo que tiene minutos y viene justo después de algo con hora de fin, arranca ahí */
+  for (let i = 1; i < L.length; i++) {
+    const it = L[i], pr = L[i - 1];
+    if (!it.desde && !it.hasta && it.min > 0 && pr.hasta && !(i + 1 < L.length && L[i + 1].desde && enHora(cx.dia, L[i + 1].desde) - enHora(cx.dia, pr.hasta) < it.min * M)) {
+      const a = enHora(cx.dia, pr.hasta); it.desde = pr.hasta; it.hasta = hm(a + it.min * M);
+    }
+  }
   const res = new Array(L.length);
   let cursor = ahora;
   for (let i = L.length - 1; i >= 0; i--) {
     const it = L[i];
     let e = it.hasta ? enHora(cx.dia, it.hasta) : cursor;
-    if (!(e <= ahora + 5 * M)) e = Math.min(cursor, ahora);
+    if (!(e <= ahora + 5 * M) && !(it.desde && it.hasta)) e = Math.min(cursor, ahora);
     let s = it.desde ? enHora(cx.dia, it.desde) : NaN;
     if (isNaN(s) && it.min > 0 && !it.hasta) {
       /* si lo había arrancado (En progreso), cuenta desde ahí */
@@ -233,6 +241,8 @@ async function procesarHecho(cx, items, ahora) {
       else if (prev && e - ms(prev.fin) <= 4 * 3600e3) s = ms(prev.fin);
       else { cx.log.push("❓ no sé cuánto duró " + it.nombre + ", decime los minutos"); continue; }
     }
+    if (/sue[ñn]o|dorm/i.test(it.nombre) && it.desde && it.hasta) { const hs = enHora(cx.dia, it.desde), he = enHora(cx.dia, it.hasta); s = hs; e = he > hs ? he : he + 24 * 3600e3; if (e - s > 16 * 3600e3) e -= 24 * 3600e3; }
+    else if (it.desde && it.hasta && !(s < e)) e += 24 * 3600e3;
     if (!(s < e)) continue;
     res[i] = { it, s, e }; cursor = s;
   }
@@ -457,13 +467,16 @@ function agendaTexto(cx, desdeMs, max) {
   return fut.map((t) => (t.estado === "En progreso" ? "▶️ " : "") + hm(ms(t.inicio)) + "–" + hm(ms(t.fin)) + " " + t.nombre).join("\n");
 }
 
-function prompt(hoy, ahora, tareasHoy, totales, texto, hayAudio, fechaReal, proximas) {
+function prompt(hoy, ahora, tareasHoy, totales, texto, hayAudio, fechaReal, proximas, ayerT) {
   const comp = (t) => ({ id: t.id, n: t.nombre, h: t.habilidad, min: t.min, est: t.estado, ini: t.inicio && t.inicio.length > 10 ? horaAR(new Date(ms(t.inicio))) : "sin hora", fin: t.fin && t.fin.length > 10 ? horaAR(new Date(ms(t.fin))) : "" });
   return [
     "Sos el agente de agenda de Manu (estudiante y emprendedor en Argentina, habla rioplatense). Tu ÚNICO trabajo es ENTENDER su mensaje y devolverlo estructurado en JSON. NO calcules horarios ni reordenes nada: eso lo hace el sistema con tus datos. Respondé SOLO JSON.",
     "HOY (día lógico; dura hasta que se duerme, corte 05:00): " + hoy + " (" + diaSemana(hoy) + "). AHORA: " + ahora + " (calendario real " + fechaReal + "). 'Mañana' = " + sumarDias(hoy, 1) + ".",
     hayAudio ? "El mensaje es el AUDIO adjunto: transcribilo en 'transcripcion' (limpio, sin muletillas)." : "MENSAJE: " + texto,
     "AGENDA DE HOY (n=nombre, h=habilidad, est=estado, ini/fin en hora argentina): " + JSON.stringify(tareasHoy.map(comp)),
+    "AYER (" + sumarDias(hoy, -1) + "): " + JSON.stringify((ayerT || []).map((t) => ({ n: t.nombre, est: t.estado, pen: !!t.pen, min: t.min, ini: t.inicio && t.inicio.length > 10 ? horaAR(new Date(ms(t.inicio))) : "sin hora" }))),
+    "OTROS DÍAS: si cuenta algo de ayer u otro día ('ayer leí a la mañana', 'lo de física de ayer sí lo estudié'), ponelo en hecho o corregir con fecha:'AAAA-MM-DD' de ESE día. Si un hábito quedó penalizado pero dice que sí lo hizo, va en hecho con esa fecha (el sistema le saca la penalización).",
+    "SUEÑO: siempre registralo cuando lo cuente, es clave para medir. 'me acosté 22:40 y me levanté 5:45' -> hecho {nombre:'Sueño', habilidad:'Sueño', desde:'22:40', hasta:'05:45', fecha: el día en que se acostó (si se acostó después de medianoche, igual es el día anterior)}. 'me levanté a las 5:45' sin decir cuándo se acostó: preguntalo en respuesta.",
     "MINUTOS HECHOS HOY POR HABILIDAD: " + JSON.stringify(totales),
     "PRÓXIMOS DÍAS (parciales, consultas, etc.): " + JSON.stringify((proximas || []).filter((t) => t.evento || /parcial|consulta|cursada|examen/i.test(t.nombre)).slice(0, 15).map((t) => ({ n: t.nombre, dia: (t.inicio || "").slice(0, 10), ini: t.inicio && t.inicio.length > 10 ? horaAR(new Date(ms(t.inicio))) : "" }))),
     "HABILIDADES: Estudios (facultad, módulos, consultas de materias, cursada), Trabajo (negocio, agencia, WhatsApp, historias, videos, clientes, ventas), Lectura, Espiritual (meditar), Finanzas (estudiar inversiones), Marca Personal, Ejercicio (gimnasio, bici, correr), Sueño (dormir, siesta). Comidas, traslados y tiempo muerto van SIN habilidad (\"\").",
@@ -588,7 +601,8 @@ async function procesar(env, msg) {
     const ahoraD = new Date(ahoraMs), hoy = fechaLogica(ahoraD), ahora = horaAR(ahoraD), fechaReal = fechaAR(ahoraD);
     const cx = await cargarDia(env, hoy);
     const proximas = await tareasDesde(env, sumarDias(hoy, 1), sumarDias(hoy, 10));
-    const mkPrompt = (tx, hayAudio) => prompt(hoy, ahora, vivas(cx).filter((t) => !/sin registrar/i.test(t.nombre) || true), totalesDe(cx.ts), tx, hayAudio, fechaReal, proximas);
+    const ayerT = (await tareasDesde(env, sumarDias(hoy, -1), hoy)).filter((t) => t.inicio && diaDe(t) === sumarDias(hoy, -1) && !/sin registrar/i.test(t.nombre));
+    const mkPrompt = (tx, hayAudio) => prompt(hoy, ahora, vivas(cx).filter((t) => !/sin registrar/i.test(t.nombre) || true), totalesDe(cx.ts), tx, hayAudio, fechaReal, proximas, ayerT);
     const partes = [{ text: mkPrompt(texto, !!audio) }];
     let audioB64 = "";
     if (audio) {
@@ -621,6 +635,18 @@ async function procesar(env, msg) {
       cxFinal = await planificarDia(env, Object.assign({}, r.planificar, { fecha: hoy }), hoy, desde);
       cxFinal.log = cx.log.concat(cxFinal.log);
     } else {
+      /* lo que cuenta de otro día (ayer, anteayer): se registra en ese día */
+      const deOtro = (x) => x && x.fecha && /^\d{4}-\d{2}-\d{2}$/.test(x.fecha) && x.fecha !== hoy;
+      const otros = {};
+      ["hecho", "corregir"].forEach((k) => (r[k] || []).filter(deOtro).forEach((x) => { (otros[x.fecha] = otros[x.fecha] || { hecho: [], corregir: [] })[k].push(x); }));
+      r.hecho = (r.hecho || []).filter((x) => !deOtro(x)); r.corregir = (r.corregir || []).filter((x) => !deOtro(x));
+      for (const f of Object.keys(otros)) {
+        const c2 = await cargarDia(env, f);
+        procesarCorregir(c2, otros[f].corregir);
+        await procesarHecho(c2, otros[f].hecho, Math.min(ahoraMs, enHora(f, "04:59") + 24 * 3600e3));
+        await guardar(c2);
+        if (c2.log.length) cx.log.push("📅 " + diaSemana(f) + " " + f.slice(8) + "/" + f.slice(5, 7) + ":\n" + c2.log.join("\n"));
+      }
       procesarCorregir(cx, r.corregir);
       await procesarHecho(cx, r.hecho, ahoraMs);
       cerrarViejos(cx, ahoraMs);
@@ -664,7 +690,10 @@ const NOMBRE_HABITO = { "Ejercicio": "Ejercicio", "Lectura": "Lectura", "Finanza
 const PENALIZAR_DESDE = "2026-11-26"; /* el sistema recién arranca mañana: antes de esa fecha no se penaliza */
 async function penalizarDia(env, fecha) {
   if (fecha < PENALIZAR_DESDE) return { n: 0, pts: 0, lista: [], plan: 0, hecho: 0, omitido: true };
-  const ts = await tareasDesde(env, fecha, sumarDias(fecha, 1));
+  const ts0 = await tareasDesde(env, fecha, sumarDias(fecha, 1));
+  /* lo flexible (estudio, trabajo, comidas, sueño planificado) que quedó pendiente se saca: no se penaliza ni queda colgado */
+  for (const t of ts0) if (t.inicio && diaDe(t) === fecha && !t.hecho && t.estado !== "En progreso" && !t.evento && !HABITOS[t.habilidad]) { try { await notion(env, "pages/" + t.id, "PATCH", { archived: true }); t.archivado = true; } catch (e) {} }
+  const ts = ts0.filter((t) => !t.archivado);
   const delDia = ts.filter((t) => t.inicio && diaDe(t) === fecha && !t.evento && !/sin registrar|tiempo muerto/i.test(t.nombre));
   let n = 0, pts = 0; const lista = [];
   for (const h of Object.keys(HABITOS)) {
