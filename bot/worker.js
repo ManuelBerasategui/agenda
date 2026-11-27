@@ -222,6 +222,8 @@ async function procesarHecho(cx, items, ahora) {
       if (/tiempo muerto|vueltas|deambul/i.test(it.nombre)) { res[i] = { it, relleno: true, e }; cursor = e; continue; }
       /* "terminé X" sin minutos: desde que arrancó (En progreso) o desde lo último registrado */
       const hab = habDe(it.nombre, it.habilidad);
+      const yaReg = vivas(cx).find((t) => t.hecho && conHora(t) && parecido(t, it.nombre, hab) && e - ms(t.fin) <= 20 * M && e >= ms(t.fin) - M);
+      if (yaReg) { yaReg.usado = true; cx.log.push("👍 " + yaReg.nombre + " ya estaba registrado (" + hm(ms(yaReg.inicio)) + "–" + hm(ms(yaReg.fin)) + ")"); continue; }
       const prog = vivas(cx).find((t) => t.estado === "En progreso" && parecido(t, it.nombre, hab) && conHora(t) && ms(t.inicio) < e);
       const plan = vivas(cx).find((t) => !t.hecho && t.estado !== "En progreso" && parecido(t, it.nombre, hab) && t.min > 0);
       const prev = vivas(cx).filter((t) => t.hecho && conHora(t) && ms(t.fin) <= e).sort((a, b) => ms(b.fin) - ms(a.fin))[0];
@@ -276,10 +278,11 @@ function procesarFinDia(cx, ahora, dormirHHMM) {
   if (dormirHHMM) { const d = enHora(cx.dia, dormirHHMM); if (!isNaN(d) && d > ahora - 60 * M) fin = d; }
   const sacados = [], sinCumplir = [];
   vivas(cx).forEach((t) => {
-    if (t.hecho || t.estado === "En progreso") return;
+    if (t.pen && !t.hecho && esHabito(t)) { sinCumplir.push(t.nombre); return; }
+    if (t.hecho || t.estado === "En progreso" || t.pen) return;
     if (/sue[ñn]o/i.test(t.nombre)) { const dur = duracion(t) || 420; cambiar(cx, t, { inicio: aISO(r5(fin)), fin: aISO(r5(fin) + dur * M) }); return; }
     if (conHora(t) && ms(t.inicio) > fin + 6 * 3600e3) return;
-    if (esHabito(t)) { cambiar(cx, t, { inicio: cx.dia, fin: cx.dia }); sinCumplir.push(t.nombre); }
+    if (esHabito(t)) { cambiar(cx, t, { inicio: cx.dia, fin: cx.dia, penalizado: true, perdidos: duracion(t) * 3 }); t.pen = true; sinCumplir.push(t.nombre + " (-" + duracion(t) * 3 + ")"); }
     else { cambiar(cx, t, { archivar: true }); sacados.push(t.nombre); }
   });
   cx.cerrado = true;
@@ -335,7 +338,7 @@ function procesarNoHace(cx, nombres) {
   for (const n of nombres || []) {
     const t = vivas(cx).find((x) => !x.hecho && (norm(x.nombre) === norm(n) || parecido(x, n, "")));
     if (!t) continue;
-    if (esHabito(t)) { cambiar(cx, t, { inicio: cx.dia, fin: cx.dia, estado: "Pendientes" }); cx.log.push("🚫 " + t.nombre + " hoy no (cuenta como no cumplido)"); }
+    if (esHabito(t)) { cambiar(cx, t, { inicio: cx.dia, fin: cx.dia, estado: "Pendientes", penalizado: true, perdidos: duracion(t) * 3 }); t.pen = true; cx.log.push("🚫 " + t.nombre + " hoy no: penalizado (-" + duracion(t) * 3 + " puntos)"); }
     else { cambiar(cx, t, { archivar: true }); cx.log.push("🚫 saqué " + t.nombre); }
   }
 }
