@@ -82,7 +82,7 @@ function propsDe(a) {
   if (a.inicio) p["Fecha Inicio"] = { date: { start: fechaNotion(a.inicio) } };
   if (a.fin) p["Fecha Fin"] = { date: { start: fechaNotion(a.fin) } };
   if (a.estado) { p["Estado"] = { status: { name: a.estado } }; p["Completado"] = { checkbox: a.estado === "Hecho" }; }
-  if (a.penalizado) p["Penalizado"] = { checkbox: true };
+  if (a.penalizado != null) p["Penalizado"] = { checkbox: !!a.penalizado };
   if (a.perdidos != null) p["Puntos perdidos"] = { number: Math.max(0, Math.round(+a.perdidos)) };
   if (a.nota != null) p["Descripción"] = { rich_text: a.nota ? [{ text: { content: String(a.nota).slice(-1900) } }] : [] };
   if (a.evento != null) p["Es evento"] = { checkbox: !!a.evento };
@@ -278,6 +278,8 @@ function procesarFinDia(cx, ahora, dormirHHMM) {
   if (dormirHHMM) { const d = enHora(cx.dia, dormirHHMM); if (!isNaN(d) && d > ahora - 60 * M) fin = d; }
   const sacados = [], sinCumplir = [];
   vivas(cx).forEach((t) => {
+    const yaHizo = esHabito(t) && vivas(cx).some((o) => o.hecho && o !== t && (o.habilidad === t.habilidad || norm(o.nombre) === norm(t.nombre)));
+    if (yaHizo && !t.hecho) { cambiar(cx, t, { archivar: true, penalizado: false }); return; }
     if (t.pen && !t.hecho && esHabito(t)) { sinCumplir.push(t.nombre); return; }
     if (t.hecho || t.estado === "En progreso" || t.pen) return;
     if (/sue[ñn]o/i.test(t.nombre)) { const dur = duracion(t) || 420; cambiar(cx, t, { inicio: aISO(r5(fin)), fin: aISO(r5(fin) + dur * M) }); return; }
