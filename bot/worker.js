@@ -305,6 +305,19 @@ function procesarFinDia(cx, ahora, dormirHHMM) {
   cx.cerrado = true;
   cx.log.push("🌙 Cierro el día" + (sacados.length ? ". Saqué lo que no vas a hacer: " + Array.from(new Set(sacados)).join(", ") : "") + (sinCumplir.length ? ". Hábitos sin cumplir hoy (penalizan): " + Array.from(new Set(sinCumplir)).join(", ") : ". Cumpliste todos los hábitos") + ".");
 }
+/* Borrar bloques que no corresponden (duplicados, cosas mal cargadas) */
+function procesarBorrar(cx, items) {
+  for (const it of items || []) {
+    if (!it || !it.nombre) continue;
+    const ref = it.hora ? enHora(cx.dia, it.hora) : null;
+    const c = vivas(cx).filter((t) => norm(t.nombre) === norm(it.nombre) || parecido(t, it.nombre, it.habilidad) && (!it.min || t.min === it.min))
+      .filter((t) => !it.min || t.min === Math.round(it.min))
+      .sort((a, b) => (ref && conHora(a) && conHora(b) ? Math.abs(ms(a.inicio) - ref) - Math.abs(ms(b.inicio) - ref) : 0))[0];
+    if (!c) { cx.log.push("❓ no encontré " + it.nombre + " para borrar"); continue; }
+    cambiar(cx, c, { archivar: true }); c.usado = true;
+    cx.log.push("🗑️ Borré " + c.nombre + (conHora(c) ? " " + hm(ms(c.inicio)) + "–" + hm(ms(c.fin)) : "") + (c.min ? " (" + c.min + " min, ya no suma XP)" : ""));
+  }
+}
 /* Lo que arranca ahora (o en N minutos) */
 async function procesarAhora(cx, it, ahora) {
   if (!it || !it.nombre) return;
@@ -421,7 +434,7 @@ async function marcarHuecos(cx, ahora) {
   const huecos = [];
   for (const t of reg.slice(1)) { const a = ms(t.inicio); if (a - cur > 30 * M) huecos.push([cur, a]); cur = Math.max(cur, ms(t.fin)); }
   if (tope - cur > 30 * M) huecos.push([cur, tope]);
-  for (const [a, b] of huecos) {
+  for (const [a, b] of huecos.filter(([a, b]) => b - a <= 5 * 3600e3)) {
     if (plan.some((t) => FIJO_NOMBRE.test(t.nombre) && ms(t.inicio) < b && ms(t.fin) > a)) continue;
     await crear(cx, { nombre: "Sin registrar", habilidad: "", inicio: aISO(a), fin: aISO(b), min: Math.round((b - a) / M), estado: "Hecho", nota: "Contale al bot qué hiciste y se reemplaza" });
     cx.sinRegistro.push(hm(a) + " a " + hm(b));
@@ -517,6 +530,7 @@ function prompt(hoy, ahora, tareasHoy, totales, texto, hayAudio, fechaReal, prox
     "- corregir: si dice que algo YA registrado duró otra cosa ('el módulo era de 75, no de 50'): [{nombre, habilidad, min, desde, hasta}] con los minutos correctos y, si la dice, la hora en que arrancó (desde) o terminó (hasta). NO lo pongas también en hecho.",
     "- Si dice que va a hacer algo que interrumpe lo que está 'En progreso' (ej. 'ahora voy a cenar'), poné eso en 'ahora' y, si lo que estaba en progreso lo terminó o lo cortó, ponelo en hecho sin min (el sistema mide desde que arrancó). 'Después sigo estudiando' -> despues: [{nombre:'Estudio <Materia de lo que venía estudiando>'}].",
     "- fin_del_dia: true si dice que después de lo que hace ahora se va a dormir, que corta por hoy o que no hace nada más ('hago esto y me voy a dormir', 'hasta acá por hoy'). dormir: 'HH:MM' si dice a qué hora se acuesta. El sistema saca lo pendiente y deja los hábitos no hechos para penalizar. Si cuenta que ya comió algo (merienda, cena) ponelo en hecho.",
+    "- borrar: bloques que pide sacar porque no corresponden (duplicados, mal cargados, 'las compras no eran trabajo'): [{nombre (como figura en la agenda), fecha si no es hoy, hora 'HH:MM' de inicio aprox., min}]. Si algo estaba mal categorizado, borralo y cargalo bien en hecho (ej. compras -> borrar el 'Trabajo Diario' de esa hora y hecho {nombre:'Compras', desde, hasta}).",
     "- estado: correcciones explícitas que pide ('volvelo a pendientes', 'eso no lo terminé'): [{id, estado:'Pendientes'|'En progreso'|'Hecho'}] con ids de la agenda.",
     "- respuesta: texto corto (1-3 líneas), rioplatense, sin markdown. NO listes horarios (el sistema agrega la agenda). Si pregunta algo (cuánto estudió, qué le queda, dónde era algo), respondé con los datos de arriba; si no está en los datos, decí que no lo tenés.",
     "EJEMPLOS:",
@@ -526,7 +540,7 @@ function prompt(hoy, ahora, tareasHoy, totales, texto, hayAudio, fechaReal, prox
     "'terminé la consulta de física, fueron 90 minutos; vuelvo a casa, media hora, y después media hora de negocio y estudio informática' -> {\"hecho\":[{\"nombre\":\"Consulta Física\",\"habilidad\":\"Estudios\",\"min\":90}],\"ahora\":{\"nombre\":\"Traslado a casa\",\"min\":30,\"en\":0},\"despues\":[{\"nombre\":\"Trabajo Diario\",\"habilidad\":\"Trabajo\",\"min\":30},{\"nombre\":\"Estudio Informática\",\"habilidad\":\"Estudios\"}]}",
     "'ahora almuerzo, a las 15:20 salgo para la facu, consulta de física a las 16, vuelvo y estudio informática full. No voy al gimnasio' -> {\"ahora\":{\"nombre\":\"Almuerzo\",\"min\":30,\"en\":0},\"fijos\":[{\"nombre\":\"Traslado a la facultad\",\"desde\":\"15:20\",\"hasta\":\"16:00\"},{\"nombre\":\"Consulta Física\",\"habilidad\":\"Estudios\",\"desde\":\"16:00\",\"hasta\":\"17:30\"},{\"nombre\":\"Traslado a casa\",\"desde\":\"17:30\",\"min\":40}],\"despues\":[{\"nombre\":\"Estudio Informática\",\"habilidad\":\"Estudios\"}],\"no_hace\":[\"Ejercicio\"]}",
     "'dormí la siesta, media hora' -> {\"hecho\":[{\"nombre\":\"Siesta\",\"habilidad\":\"Sueño\",\"min\":30}]}",
-    "FORMATO: {\"transcripcion\":\"\",\"hecho\":[],\"ahora\":null,\"despues\":[],\"fijos\":[],\"no_hace\":[],\"planificar\":null,\"corregir\":[],\"fin_del_dia\":false,\"dormir\":null,\"estado\":[],\"respuesta\":\"\"}"
+    "FORMATO: {\"transcripcion\":\"\",\"hecho\":[],\"ahora\":null,\"despues\":[],\"fijos\":[],\"no_hace\":[],\"planificar\":null,\"corregir\":[],\"borrar\":[],\"fin_del_dia\":false,\"dormir\":null,\"estado\":[],\"respuesta\":\"\"}"
   ].join("\n");
 }
 
@@ -665,15 +679,17 @@ async function procesar(env, msg) {
       /* lo que cuenta de otro día (ayer, anteayer): se registra en ese día */
       const deOtro = (x) => x && x.fecha && /^\d{4}-\d{2}-\d{2}$/.test(x.fecha) && x.fecha !== hoy;
       const otros = {};
-      ["hecho", "corregir"].forEach((k) => (r[k] || []).filter(deOtro).forEach((x) => { (otros[x.fecha] = otros[x.fecha] || { hecho: [], corregir: [] })[k].push(x); }));
-      r.hecho = (r.hecho || []).filter((x) => !deOtro(x)); r.corregir = (r.corregir || []).filter((x) => !deOtro(x));
+      ["hecho", "corregir", "borrar"].forEach((k) => (r[k] || []).filter(deOtro).forEach((x) => { (otros[x.fecha] = otros[x.fecha] || { hecho: [], corregir: [], borrar: [] })[k].push(x); }));
+      r.hecho = (r.hecho || []).filter((x) => !deOtro(x)); r.corregir = (r.corregir || []).filter((x) => !deOtro(x)); r.borrar = (r.borrar || []).filter((x) => !deOtro(x));
       for (const f of Object.keys(otros)) {
         const c2 = await cargarDia(env, f);
+        procesarBorrar(c2, otros[f].borrar);
         procesarCorregir(c2, otros[f].corregir);
         await procesarHecho(c2, otros[f].hecho, Math.min(ahoraMs, enHora(f, "04:59") + 24 * 3600e3));
         await guardar(c2);
         if (c2.log.length) cx.log.push("📅 " + diaSemana(f) + " " + f.slice(8) + "/" + f.slice(5, 7) + ":\n" + c2.log.join("\n"));
       }
+      procesarBorrar(cx, r.borrar);
       procesarCorregir(cx, r.corregir);
       await procesarHecho(cx, r.hecho, ahoraMs);
       cerrarViejos(cx, ahoraMs);
