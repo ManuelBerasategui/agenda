@@ -167,6 +167,8 @@ async function crear(cx, a) {
   return t;
 }
 async function guardar(cx) {
+  for (const p of cx.porCrear || []) await crear(cx, p);
+  cx.porCrear = [];
   for (const [id, a] of cx.cambios) {
     const t = cx.ts.find((x) => x.id === id);
     if (t && t.nuevo) { if (t.archivado) continue; const pg = await notion(cx.env, "pages", "POST", { parent: { database_id: DB }, properties: propsDe(Object.assign({}, a, { inicio: t.inicio, fin: t.fin, min: t.min, estado: t.estado, nombre: t.nombre, habilidad: t.habilidad })) }); t.id = pg.id; t.nuevo = false; continue; }
@@ -375,6 +377,29 @@ function procesarNoHace(cx, nombres) {
   }
 }
 
+/* Limpieza automática del día: sin duplicados de hábitos, sin bloques de la misma habilidad superpuestos, sin bloques de duración cero */
+function sanear(cx) {
+  vivas(cx).forEach((t) => { if (conHora(t) && ms(t.fin) <= ms(t.inicio)) { const m = t.min || 10; cambiar(cx, t, { fin: aISO(ms(t.inicio) + m * M) }); } });
+  Object.keys(HABITOS).forEach((h) => {
+    const del = vivas(cx).filter((t) => t.habilidad === h || norm(t.nombre) === norm(NOMBRE_HABITO[h]));
+    const hechos = del.filter((t) => t.hecho), pend = del.filter((t) => !t.hecho && t.estado !== "En progreso");
+    if (hechos.length || del.some((t) => t.estado === "En progreso")) pend.forEach((t) => cambiar(cx, t, { archivar: true }));
+    else pend.slice(1).forEach((t) => cambiar(cx, t, { archivar: true }));
+  });
+  const reg = vivas(cx).filter((t) => (t.hecho || t.estado === "En progreso") && t.habilidad && conHora(t)).sort((a, b) => ms(a.inicio) - ms(b.inicio));
+  for (let i = 0; i < reg.length; i++) for (let j = i + 1; j < reg.length; j++) {
+    const a = reg[i], b = reg[j];
+    if (a.archivado || b.archivado || a.habilidad !== b.habilidad) continue;
+    const o = Math.min(ms(a.fin), ms(b.fin)) - Math.max(ms(a.inicio), ms(b.inicio));
+    if (o <= 0) continue;
+    const corto = Math.min(ms(a.fin) - ms(a.inicio), ms(b.fin) - ms(b.inicio));
+    const fuera = a.usado && !b.usado ? b : b.usado && !a.usado ? a : b;
+    const queda = fuera === a ? b : a;
+    if (o >= corto * 0.5) { cambiar(cx, fuera, { archivar: true }); cx.log.push("🧹 Saqué " + fuera.nombre + " " + hm(ms(fuera.inicio)) + "–" + hm(ms(fuera.fin)) + " (se pisaba con " + queda.nombre + ", no cuento dos veces)"); }
+    else if (ms(fuera.inicio) < ms(queda.fin) && ms(fuera.inicio) >= ms(queda.inicio)) { const ni = ms(queda.fin); cambiar(cx, fuera, { inicio: aISO(ni), min: Math.max(1, Math.round((ms(fuera.fin) - ni) / M)) }); }
+    else { const nf = ms(queda.inicio); cambiar(cx, fuera, { fin: aISO(nf), min: Math.max(1, Math.round((nf - ms(fuera.inicio)) / M)) }); }
+  }
+}
 /* Coloca bloques uno detrás de otro desde 'cursor', esquivando los fijos, sin huecos. */
 function colocar(items, ocupado, cursor, limite) {
   const fijos = ocupado.slice(), cola = items.slice(), puestos = [], afuera = [];
@@ -384,8 +409,16 @@ function colocar(items, ocupado, cursor, limite) {
     if (i < 0) { const sig = Math.min.apply(null, cola.map((it) => it.desde)); i = cola.findIndex((it) => it.desde === sig); }
     const it = cola.splice(i, 1)[0];
     let x = Math.max(cursor, it.desde || 0), mov = true;
-    while (mov) { mov = false; for (const [a, b] of fijos) if (x < b && x + it.dur > a) { x = b; mov = true; } }
+    while (mov) { mov = false; for (const [a, b] of fijos) if (x < b && x + it.dur > a) {
+      /* hueco antes de algo fijo: si es estudio o trabajo, lo parto y lleno el hueco */
+      const hueco = a - x;
+      if (it.partible && x >= a - hueco && hueco >= 25 * M && hueco < it.dur && x >= Math.max(cursor, it.desde || 0)) {
+        const resto = Object.assign({}, it, { dur: it.dur - hueco, parte: true });
+        cola.unshift(resto); it.dur = hueco; mov = false; break;
+      }
+      x = b; mov = true; } }
     if (x + it.dur > limite) { afuera.push(it); continue; }
+    if (it.parte) { puestos.push([Object.assign({}, it, { nuevo: true }), x, x + it.dur]); fijos.push([x, x + it.dur]); cursor = x + it.dur + 5 * M; continue; }
     puestos.push([it, x, x + it.dur]); fijos.push([x, x + it.dur]);
     cursor = x + it.dur + (it.dur >= 45 && !it.comida ? 5 * M : 0);
   }
@@ -393,10 +426,10 @@ function colocar(items, ocupado, cursor, limite) {
 }
 
 /* Reordena TODO lo pendiente del día desde ahora: sin superposiciones, sin huecos, respetando lo fijo. */
-function reordenar(cx, desdeMs) {
+function reordenar(cx, desdeMs, limiteForzado) {
   const vs = vivas(cx);
   const sue = vs.find((t) => /sue[ñn]o/i.test(t.nombre) && !t.hecho && conHora(t) && ms(t.inicio) > desdeMs);
-  const limite = sue ? ms(sue.inicio) : enHora(cx.dia, "02:00");
+  const limite = limiteForzado || (sue ? ms(sue.inicio) : enHora(cx.dia, "02:00"));
   const esFija = (t) => t.hecho || t.estado === "En progreso" || t.evento || cx.anclados.has(t.id) || FIJO_NOMBRE.test(t.nombre) || !conHora(t);
   const ocupado = vs.filter((t) => conHora(t) && esFija(t) && !t.hecho && ms(t.fin) > desdeMs).map((t) => [ms(t.inicio), ms(t.fin)])
     .concat(vs.filter((t) => t.hecho && conHora(t) && ms(t.fin) > desdeMs).map((t) => [ms(t.inicio), ms(t.fin)]));
@@ -405,7 +438,7 @@ function reordenar(cx, desdeMs) {
   const flex = vivas(cx).filter((t) => conHora(t) && !esFija(t));
   const orden = (t) => { const i = cx.prioridad.indexOf(t.id); return i >= 0 ? i - 1000 : ms(t.inicio); };
   flex.sort((a, b) => orden(a) - orden(b));
-  const items = flex.map((t) => { const c = comidaDe(t.nombre); return { t, dur: duracion(t) * M, comida: !!c, desde: c && COMIDA[c] ? enHora(cx.dia, hh(COMIDA[c])) : 0 }; });
+  const items = flex.map((t) => { const c = comidaDe(t.nombre); return { t, dur: duracion(t) * M, comida: !!c, partible: !c && (t.habilidad === "Estudios" || t.habilidad === "Trabajo") && !FIJO_NOMBRE.test(t.nombre), desde: c && COMIDA[c] ? enHora(cx.dia, hh(COMIDA[c])) : 0 }; });
   let { puestos, afuera } = colocar(items, ocupado, r5(desdeMs), limite);
   /* si no entra todo, primero se caen los bloques flexibles (no los hábitos ni lo que pidió recién) */
   const sacados = [];
@@ -417,9 +450,11 @@ function reordenar(cx, desdeMs) {
     ({ puestos, afuera } = colocar(items, ocupado, r5(desdeMs), limite));
   }
   afuera = afuera.concat(sacados);
-  puestos.forEach(([it, s, e]) => { if (ms(it.t.inicio) !== s || ms(it.t.fin) !== e) cambiar(cx, it.t, { inicio: aISO(s), fin: aISO(e) }); });
+  const partes = puestos.filter((p) => p[0].nuevo); puestos = puestos.filter((p) => !p[0].nuevo);
+  puestos.forEach(([it, s, e]) => { if (ms(it.t.inicio) !== s || ms(it.t.fin) !== e) cambiar(cx, it.t, { inicio: aISO(s), fin: aISO(e), min: Math.round((e - s) / M) }); });
+  partes.forEach(([it, s, e]) => { cx.porCrear = (cx.porCrear || []).concat([{ nombre: it.t.nombre, habilidad: it.t.habilidad, inicio: aISO(s), fin: aISO(e), min: Math.round((e - s) / M), estado: "Pendientes" }]); });
   /* lo que pidió explícitamente nunca se cae: se pone igual a continuación (hasta las 05:00) */
-  const pedidos = afuera.filter((it) => cx.prioridad.indexOf(it.t.id) >= 0 || cx.anclados.has(it.t.id));
+  const pedidos = afuera.filter((it) => !it.t.relleno && !cx.planificando && (cx.prioridad.indexOf(it.t.id) >= 0 || cx.anclados.has(it.t.id)));
   afuera = afuera.filter((it) => pedidos.indexOf(it) < 0);
   if (pedidos.length) {
     const ult = Math.max(r5(desdeMs), ...puestos.map((p) => p[2]), ...ocupado.filter((o) => o[0] < limite).map((o) => o[1]));
@@ -428,10 +463,9 @@ function reordenar(cx, desdeMs) {
     afuera = afuera.concat(extra.afuera);
   }
   afuera.forEach((it) => {
+    if (it.t.relleno) { cambiar(cx, it.t, { archivar: true }); return; }
     if (!esHabito(it.t) && (it.t.habilidad === "Estudios" || it.t.habilidad === "Trabajo")) {
-      /* estudio y trabajo que no entran hoy pasan a mañana (se reacomodan cuando arranque el día) */
-      const m = enHora(sumarDias(cx.dia, 1), "09:00");
-      cambiar(cx, it.t, { inicio: aISO(m), fin: aISO(m + it.dur) }); cx.quitados.push(it.t.nombre + " (lo pasé a mañana)"); return;
+      cambiar(cx, it.t, { archivar: true }); cx.sinTiempo = cx.sinTiempo || {}; cx.sinTiempo[it.t.nombre] = (cx.sinTiempo[it.t.nombre] || 0) + Math.round(it.dur / M); return;
     }
     if (esHabito(it.t)) { cambiar(cx, it.t, { inicio: cx.dia, fin: cx.dia }); cx.quitados.push(it.t.nombre + " (no entra en el horario, queda pendiente)"); }
     else { cambiar(cx, it.t, { archivar: true }); cx.quitados.push(it.t.nombre); }
@@ -459,6 +493,7 @@ async function marcarHuecos(cx, ahora) {
 async function planificarDia(env, p, hoy, ahora) {
   const dia = p.fecha && /^\d{4}-\d{2}-\d{2}$/.test(p.fecha) ? p.fecha : hoy;
   const cx = await cargarDia(env, dia);
+  cx.planificando = true;
   const desp = enHora(dia, p.despertar || "08:00"), dormir = enHora(dia, p.dormir || "00:00");
   const inicio = dia === hoy ? Math.max(ahora, desp) : desp;
   if (p.fijos) await procesarFijos(cx, p.fijos.map((f) => Object.assign({ fecha: dia }, f)));
@@ -472,20 +507,26 @@ async function planificarDia(env, p, hoy, ahora) {
   const habFaltan = Object.keys(HABITOS).filter((h) => h !== "Ejercicio" && !yaHecho(h) && !hab.some((t) => t.habilidad === h) && !(p.bloques || []).some((b) => habDe(b.nombre, b.habilidad) === h) && !(p.sin || []).some((n) => norm(n) === norm(NOMBRE_HABITO[h])));
   if (habFaltan.indexOf("Espiritual") >= 0) lista.push({ nombre: "Meditar", habilidad: "Espiritual", min: 7 });
   (p.bloques || []).forEach((b) => {
-    const h = habDe(b.nombre, b.habilidad), total = Math.max(5, Math.round(+b.min || durDefecto(b.nombre, h)));
+    const hb = habDe(b.nombre, b.habilidad);
+    if (HABITOS[hb] && vivas(cx).some((t) => t.habilidad === hb && (t.hecho || !t.archivado))) return;
+    const h = hb, total = Math.max(5, Math.round(+b.min || durDefecto(b.nombre, h)));
     if (h === "Estudios" && total > 95) { let r = total; while (r > 0) { const c = r > 95 ? 50 : r; lista.push({ nombre: b.nombre, habilidad: h, min: c }); r -= c; } }
     else lista.push({ nombre: b.nombre, habilidad: h, min: total });
   });
   if (quiere("almuerzo") && dormir > enHora(dia, "13:00")) lista.push({ nombre: "Almuerzo", min: 40 });
   if (quiere("cena") && dormir > enHora(dia, "21:00")) lista.push({ nombre: "Cena", min: 40 });
   habFaltan.filter((h) => h !== "Espiritual").forEach((h) => lista.push({ nombre: NOMBRE_HABITO[h], habilidad: h, min: HABITOS[h] }));
+  /* relleno: más estudio (y un rato de trabajo cada 2 módulos) para usar el día hasta la hora de dormir; lo que no entra se descarta solo */
+  const materia = ((p.bloques || []).find((b) => habDe(b.nombre, b.habilidad) === "Estudios") || {}).nombre || "Estudio";
+  if (p.rellenar !== false) for (let k = 0; k < 8; k++) { lista.push({ nombre: materia, habilidad: "Estudios", min: 75, relleno: true }); if (k % 2 === 1) lista.push({ nombre: "Trabajo Diario", habilidad: "Trabajo", min: 30, relleno: true }); }
   const nuevos = [];
-  for (const b of lista) nuevos.push(await crear(cx, { nombre: b.nombre, habilidad: habDe(b.nombre, b.habilidad), min: b.min, inicio: aISO(inicio), fin: aISO(inicio + b.min * M), estado: "Pendientes" }));
-  cx.prioridad = nuevos.map((t) => t.id).concat(hab.map((t) => t.id));
+  for (const b of lista) { const t = await crear(cx, { nombre: b.nombre, habilidad: habDe(b.nombre, b.habilidad), min: b.min, inicio: aISO(inicio), fin: aISO(inicio + b.min * M), estado: "Pendientes" }); if (b.relleno) t.relleno = true; nuevos.push(t); }
+  cx.prioridad = nuevos.filter((t) => !t.relleno).map((t) => t.id).concat(hab.map((t) => t.id), nuevos.filter((t) => t.relleno).map((t) => t.id));
   /* comidas ancladas a su horario natural; hábitos al final si no se pidieron en otro lugar */
   const sue = vivas(cx).find((t) => /sue[ñn]o/i.test(t.nombre) && conHora(t));
   if (sue && !sue.hecho) cambiar(cx, sue, { inicio: aISO(dormir), fin: aISO(dormir + 420 * M), min: 420 });
-  reordenar(cx, inicio);
+  sanear(cx);
+  reordenar(cx, inicio, dormir);
   await guardar(cx);
   return cx;
 }
@@ -523,6 +564,7 @@ function prompt(hoy, ahora, tareasHoy, totales, texto, hayAudio, fechaReal, prox
     hayAudio ? "El mensaje es el AUDIO adjunto: transcribilo en 'transcripcion' (limpio, sin muletillas)." : "MENSAJE: " + texto,
     "AGENDA DE HOY (n=nombre, h=habilidad, est=estado, ini/fin en hora argentina): " + JSON.stringify(tareasHoy.map(comp)),
     "AYER (" + sumarDias(hoy, -1) + "): " + JSON.stringify((ayerT || []).map((t) => ({ n: t.nombre, est: t.estado, pen: !!t.pen, min: t.min, ini: t.inicio && t.inicio.length > 10 ? horaAR(new Date(ms(t.inicio))) : "sin hora" }))),
+    "FECHAS: lo que pasó HOY va SIN fecha. Solo poné fecha cuando dice explícitamente 'ayer', 'el viernes', etc. Nunca mezcles: si corrige que algo era de otro día, ponelo en borrar (del día equivocado, con su fecha) y en hecho (del día correcto). 'Me quedo hasta la 1 o 2' -> dormir:'01:30'. Para planificar el resto del día poné planificar con bloques y dormir; el sistema rellena el tiempo libre con más estudio y algo de trabajo.",
     "OTROS DÍAS: si cuenta algo de ayer u otro día ('ayer leí a la mañana', 'lo de física de ayer sí lo estudié'), ponelo en hecho o corregir con fecha:'AAAA-MM-DD' de ESE día. Si un hábito quedó penalizado pero dice que sí lo hizo, va en hecho con esa fecha (el sistema le saca la penalización).",
     "SOCIAL Y OTROS (sin habilidad, se miden igual): cafés, salidas, amigos, familia -> nombre 'Social: <detalle corto>' (ej. 'Social: café con mi primo'); compras o trámites -> 'Compras'; viajes -> 'Traslado a X'. NO uses 'Tiempo muerto' para lo social ni para compras: tiempo muerto es solo dar vueltas sin hacer nada. Nunca pongas compras como trabajo.",
     "HASTA QUÉ HORA: si dice hasta qué hora se queda ('me quedo hasta las 2'), poné dormir:'02:00' (sin fin_del_dia). Si da un total de estudio en módulos ('dos módulos, 2 horas y media'), poné un ítem por módulo con sus minutos (75 y 75). 'Otros módulos más' sin cantidad: agregá módulos de 50-75 min hasta la hora que dijo.",
@@ -539,9 +581,9 @@ function prompt(hoy, ahora, tareasHoy, totales, texto, hayAudio, fechaReal, prox
     "- ahora: lo que empieza ahora o en unos minutos: {nombre, habilidad, min, en}. en = minutos hasta que arranca ('en 5' -> 5, 'descanso 5 y vuelvo' -> 5, 'ya arranqué' -> 0). min = duración si la dijo ('de 1 hora y cuarto' -> 75), si no null.",
     "- 'Ahora hago X y en N minutos Y' o 'después, en N minutos, Y' = X dura N minutos (ahora.min = N) y Y va en despues.",
     "- despues: lo que dice que hace después, EN ORDEN: [{nombre, habilidad, min}]. 'estudiar informática full' -> [{nombre:'Estudio Informática', min:null}].",
-    "- fijos: cosas con hora fija nuevas o cambiadas: [{nombre, habilidad, fecha (AAAA-MM-DD, por defecto hoy), desde 'HH:MM', hasta 'HH:MM' o min, nota}]. Ej. 'a las 15:20 salgo para la facu' -> {nombre:'Traslado a la facultad', desde:'15:20', min:40}; 'el lunes tengo parcial de física en el aula 14' -> {nombre:'Parcial Física', fecha:..., desde:'08:00', min:120, nota:'Aula 14'} (si no da la hora, preguntala en respuesta).",
+    "- fijos: cosas con hora fija nuevas o cambiadas: [{nombre, habilidad, fecha (AAAA-MM-DD, por defecto hoy), desde 'HH:MM', hasta 'HH:MM' o min, nota}]. Ej. 'me voy al gimnasio a las 11:30' -> {nombre:'Ejercicio', habilidad:'Ejercicio', desde:'11:30', min:90}; 'a las 15:20 salgo para la facu' -> {nombre:'Traslado a la facultad', desde:'15:20', min:40}; 'el lunes tengo parcial de física en el aula 14' -> {nombre:'Parcial Física', fecha:..., desde:'08:00', min:120, nota:'Aula 14'} (si no da la hora, preguntala en respuesta).",
     "- no_hace: nombres de tareas de la agenda de hoy que dice que NO va a hacer hoy (ej. 'no voy al gimnasio' -> ['Ejercicio']).",
-    "- planificar: SOLO si pide armar/organizar/planificar un día (o 'reorganizame el día', 'acomodame todo'): {fecha, despertar 'HH:MM' (def. 08:00), dormir 'HH:MM' (def. 00:00), fijos:[...], bloques:[{nombre, habilidad, min}] EN EL ORDEN en que conviene hacerlos, sin, nota}. Pensalo como un planificador experto: priorizá la materia del parcial más cercano; bloques de estudio de 50-95 min intercalados con trabajo; si pide trabajo mínimo, poné solo lo esencial (WhatsApp/consultas 20-30, historias 20, programar videos 30) repartido cada 1-2 horas entre estudio; incluí ejercicio si va al gimnasio (60-75 min, como fijo si da hora); si va a la facultad, traslados de ~40 min (como fijos). NO pongas comidas ni hábitos salvo que dé horas: el sistema los agrega solo. sin = hábitos que dice que no hace ese día. Para 'hoy' planificá solo desde AHORA.",
+    "- planificar: SOLO si pide armar/organizar/planificar un día (o 'reorganizame el día', 'acomodame todo'): {fecha, despertar 'HH:MM' (def. 08:00), dormir 'HH:MM' (def. 00:00), fijos:[...], bloques:[{nombre, habilidad, min}] EN EL ORDEN en que conviene hacerlos, sin, nota, rellenar (true por defecto: el sistema llena el tiempo libre con más estudio y trabajo cada 2 módulos; false si pide un día liviano)}. Pensalo como un planificador experto: priorizá la materia del parcial más cercano; bloques de estudio de 50-95 min intercalados con trabajo; si pide trabajo mínimo, poné solo lo esencial (WhatsApp/consultas 20-30, historias 20, programar videos 30) repartido cada 1-2 horas entre estudio; incluí ejercicio si va al gimnasio (90 min salvo que diga otra cosa, como fijo si da hora); si va a la facultad, traslados de ~40 min (como fijos). NO pongas comidas ni hábitos salvo que dé horas: el sistema los agrega solo. sin = hábitos que dice que no hace ese día. Para 'hoy' planificá solo desde AHORA.",
     "- corregir: si dice que algo YA registrado duró otra cosa ('el módulo era de 75, no de 50'): [{nombre, habilidad, min, desde, hasta}] con los minutos correctos y, si la dice, la hora en que arrancó (desde) o terminó (hasta). NO lo pongas también en hecho.",
     "- Si dice que va a hacer algo que interrumpe lo que está 'En progreso' (ej. 'ahora voy a cenar'), poné eso en 'ahora' y, si lo que estaba en progreso lo terminó o lo cortó, ponelo en hecho sin min (el sistema mide desde que arrancó). 'Después sigo estudiando' -> despues: [{nombre:'Estudio <Materia de lo que venía estudiando>'}].",
     "- fin_del_dia: true si dice que después de lo que hace ahora se va a dormir, que corta por hoy o que no hace nada más ('hago esto y me voy a dormir', 'hasta acá por hoy'). dormir: 'HH:MM' si dice a qué hora se acuesta. El sistema saca lo pendiente y deja los hábitos no hechos para penalizar. Si cuenta que ya comió algo (merienda, cena) ponelo en hecho.",
@@ -728,12 +770,15 @@ async function procesar(env, msg) {
       if (r.fin_del_dia) procesarFinDia(cx, ahoraMs, r.dormir);
       await marcarHuecos(cx, ahoraMs);
       const finActual = Math.max(ahoraMs, ...vivas(cx).filter((t) => t.estado === "En progreso" && conHora(t)).map((t) => ms(t.fin)));
+      sanear(cx);
       if (!cx.cerrado) reordenar(cx, Math.min(finActual, ahoraMs));
       await guardar(cx);
+      try { const cy = await cargarDia(env, sumarDias(hoy, -1)); sanear(cy); await guardar(cy); if (cy.log.length) cx.log.push("📅 Ayer: " + cy.log.join(" ")); } catch (e) {}
       if (r.planificar && r.planificar.fecha) planOtroDia = await planificarDia(env, r.planificar, hoy, ahoraMs);
     }
 
     if (cxFinal.log.length) out += "\n" + cxFinal.log.join("\n") + "\n";
+    if (cxFinal.sinTiempo) out += "\n⏳ No entra hoy (queda para mañana): " + Object.keys(cxFinal.sinTiempo).map((k) => k + " " + cxFinal.sinTiempo[k] + " min").join(", ") + "\n";
     if (cxFinal.quitados.length) out += "\n⚠️ No entra hoy: " + cxFinal.quitados.join(", ") + "\n";
     const ag = agendaTexto(cxFinal, ahoraMs, 8);
     if (ag) out += "\n📋 Lo que sigue:\n" + ag + "\n";
@@ -752,7 +797,7 @@ async function procesar(env, msg) {
 
 /* ---------- Tareas programadas ---------- */
 /* Hábitos diarios que se penalizan si no se hacen: habilidad -> minutos por defecto */
-const HABITOS = { "Ejercicio": 60, "Lectura": 30, "Finanzas": 15, "Marca Personal": 30, "Espiritual": 7 };
+const HABITOS = { "Ejercicio": 90, "Lectura": 30, "Finanzas": 15, "Marca Personal": 30, "Espiritual": 7 };
 const NOMBRE_HABITO = { "Ejercicio": "Ejercicio", "Lectura": "Lectura", "Finanzas": "Estudiar Inversiones", "Marca Personal": "Marca Personal", "Espiritual": "Meditar" };
 const PENALIZAR_DESDE = "2026-11-26"; /* el sistema recién arranca mañana: antes de esa fecha no se penaliza */
 async function penalizarDia(env, fecha) {
