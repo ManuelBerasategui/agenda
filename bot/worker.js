@@ -396,7 +396,7 @@ function colocar(items, ocupado, cursor, limite) {
 function reordenar(cx, desdeMs) {
   const vs = vivas(cx);
   const sue = vs.find((t) => /sue[ñn]o/i.test(t.nombre) && !t.hecho && conHora(t) && ms(t.inicio) > desdeMs);
-  const limite = sue ? ms(sue.inicio) : enHora(cx.dia, "01:00");
+  const limite = sue ? ms(sue.inicio) : enHora(cx.dia, "02:00");
   const esFija = (t) => t.hecho || t.estado === "En progreso" || t.evento || cx.anclados.has(t.id) || FIJO_NOMBRE.test(t.nombre) || !conHora(t);
   const ocupado = vs.filter((t) => conHora(t) && esFija(t) && !t.hecho && ms(t.fin) > desdeMs).map((t) => [ms(t.inicio), ms(t.fin)])
     .concat(vs.filter((t) => t.hecho && conHora(t) && ms(t.fin) > desdeMs).map((t) => [ms(t.inicio), ms(t.fin)]));
@@ -418,7 +418,21 @@ function reordenar(cx, desdeMs) {
   }
   afuera = afuera.concat(sacados);
   puestos.forEach(([it, s, e]) => { if (ms(it.t.inicio) !== s || ms(it.t.fin) !== e) cambiar(cx, it.t, { inicio: aISO(s), fin: aISO(e) }); });
+  /* lo que pidió explícitamente nunca se cae: se pone igual a continuación (hasta las 05:00) */
+  const pedidos = afuera.filter((it) => cx.prioridad.indexOf(it.t.id) >= 0 || cx.anclados.has(it.t.id));
+  afuera = afuera.filter((it) => pedidos.indexOf(it) < 0);
+  if (pedidos.length) {
+    const ult = Math.max(r5(desdeMs), ...puestos.map((p) => p[2]), ...ocupado.filter((o) => o[0] < limite).map((o) => o[1]));
+    const extra = colocar(pedidos, ocupado.concat(puestos.map((p) => [p[1], p[2]])), ult, enHora(cx.dia, "04:55"));
+    extra.puestos.forEach(([it, a, b]) => { if (ms(it.t.inicio) !== a || ms(it.t.fin) !== b) cambiar(cx, it.t, { inicio: aISO(a), fin: aISO(b) }); });
+    afuera = afuera.concat(extra.afuera);
+  }
   afuera.forEach((it) => {
+    if (!esHabito(it.t) && (it.t.habilidad === "Estudios" || it.t.habilidad === "Trabajo")) {
+      /* estudio y trabajo que no entran hoy pasan a mañana (se reacomodan cuando arranque el día) */
+      const m = enHora(sumarDias(cx.dia, 1), "09:00");
+      cambiar(cx, it.t, { inicio: aISO(m), fin: aISO(m + it.dur) }); cx.quitados.push(it.t.nombre + " (lo pasé a mañana)"); return;
+    }
     if (esHabito(it.t)) { cambiar(cx, it.t, { inicio: cx.dia, fin: cx.dia }); cx.quitados.push(it.t.nombre + " (no entra en el horario, queda pendiente)"); }
     else { cambiar(cx, it.t, { archivar: true }); cx.quitados.push(it.t.nombre); }
   });
@@ -523,6 +537,7 @@ function prompt(hoy, ahora, tareasHoy, totales, texto, hayAudio, fechaReal, prox
     "- hecho: lo que YA hizo (verbo en pasado: 'terminé', 'estuve', 'hice', 'recién termino'), en ORDEN CRONOLÓGICO, un ítem por actividad: {nombre, habilidad, min, desde, hasta, detalle}. min = minutos que dijo (1 hora y cuarto = 75). desde/hasta = horas 'HH:MM' SOLO si las dijo ('de 9 a 10:30' -> desde '09:00', hasta '10:30'; '(ahora)' o 'recién' en el último = no pongas hasta). Si dice 'terminé X' sin minutos ni horas, dejá min en null (el sistema usa desde cuándo arrancó). Si dice que en el medio estuvo dando vueltas sin decir cuánto, agregá {nombre:'Tiempo muerto'} en su lugar del orden, sin min. detalle = lo que dijo, literal y breve (ej. 'programé historias, contesté consultas, cálculos de ventas').",
     "- Si enumera varias cosas que hizo hasta ahora sin horas ('hice así: módulo de 1h15, cené, módulo de 1h30, recién termino'), ponelas en hecho en ese orden con sus minutos y SIN desde/hasta: el sistema las encadena hacia atrás desde ahora, así quedan bien en la línea de tiempo.",
     "- ahora: lo que empieza ahora o en unos minutos: {nombre, habilidad, min, en}. en = minutos hasta que arranca ('en 5' -> 5, 'descanso 5 y vuelvo' -> 5, 'ya arranqué' -> 0). min = duración si la dijo ('de 1 hora y cuarto' -> 75), si no null.",
+    "- 'Ahora hago X y en N minutos Y' o 'después, en N minutos, Y' = X dura N minutos (ahora.min = N) y Y va en despues.",
     "- despues: lo que dice que hace después, EN ORDEN: [{nombre, habilidad, min}]. 'estudiar informática full' -> [{nombre:'Estudio Informática', min:null}].",
     "- fijos: cosas con hora fija nuevas o cambiadas: [{nombre, habilidad, fecha (AAAA-MM-DD, por defecto hoy), desde 'HH:MM', hasta 'HH:MM' o min, nota}]. Ej. 'a las 15:20 salgo para la facu' -> {nombre:'Traslado a la facultad', desde:'15:20', min:40}; 'el lunes tengo parcial de física en el aula 14' -> {nombre:'Parcial Física', fecha:..., desde:'08:00', min:120, nota:'Aula 14'} (si no da la hora, preguntala en respuesta).",
     "- no_hace: nombres de tareas de la agenda de hoy que dice que NO va a hacer hoy (ej. 'no voy al gimnasio' -> ['Ejercicio']).",
@@ -719,7 +734,7 @@ async function procesar(env, msg) {
     }
 
     if (cxFinal.log.length) out += "\n" + cxFinal.log.join("\n") + "\n";
-    if (cxFinal.quitados.length) out += "\n⚠️ No entra en el día, lo saqué: " + cxFinal.quitados.join(", ") + "\n";
+    if (cxFinal.quitados.length) out += "\n⚠️ No entra hoy: " + cxFinal.quitados.join(", ") + "\n";
     const ag = agendaTexto(cxFinal, ahoraMs, 8);
     if (ag) out += "\n📋 Lo que sigue:\n" + ag + "\n";
     if (planOtroDia) out += "\n🗓️ " + diaSemana(planOtroDia.dia) + " " + planOtroDia.dia.slice(8) + "/" + planOtroDia.dia.slice(5, 7) + ":\n" + agendaTexto(planOtroDia, 0, 30) + "\n";
