@@ -463,6 +463,20 @@ async function planificarDia(env, p, hoy, ahora) {
   return cx;
 }
 
+/* Estadísticas de los últimos días (para responder "cuánto llevo", promedios, etc.) */
+async function estadisticas(env, hoy, dias) {
+  const ts = await tareasDesde(env, sumarDias(hoy, -dias), sumarDias(hoy, 1));
+  const por = {};
+  ts.filter((t) => t.hecho && t.inicio).forEach((t) => {
+    const d = diaDe(t); if (d < sumarDias(hoy, -dias + 1) || d > hoy) return;
+    const k = t.habilidad || CATEGORIA(t.nombre) || "Otros";
+    por[d] = por[d] || {}; por[d][k] = (por[d][k] || 0) + (t.min || 0);
+  });
+  const diasReg = Object.keys(por).sort(), tot = {};
+  diasReg.forEach((d) => Object.keys(por[d]).forEach((k) => (tot[k] = (tot[k] || 0) + por[d][k])));
+  const prom = {}; Object.keys(tot).forEach((k) => (prom[k] = Math.round(tot[k] / Math.max(1, diasReg.length))));
+  return { dias_con_registro: diasReg, minutos_por_dia: por, total_minutos: tot, promedio_minutos_por_dia_registrado: prom };
+}
 /* Resumen del día para Telegram y para el prompt */
 function totalesDe(ts) {
   const out = {};
@@ -474,7 +488,7 @@ function agendaTexto(cx, desdeMs, max) {
   return fut.map((t) => (t.estado === "En progreso" ? "▶️ " : "") + hm(ms(t.inicio)) + "–" + hm(ms(t.fin)) + " " + t.nombre).join("\n");
 }
 
-function prompt(hoy, ahora, tareasHoy, totales, texto, hayAudio, fechaReal, proximas, ayerT) {
+function prompt(hoy, ahora, tareasHoy, totales, texto, hayAudio, fechaReal, proximas, ayerT, stats) {
   const comp = (t) => ({ id: t.id, n: t.nombre, h: t.habilidad, min: t.min, est: t.estado, ini: t.inicio && t.inicio.length > 10 ? horaAR(new Date(ms(t.inicio))) : "sin hora", fin: t.fin && t.fin.length > 10 ? horaAR(new Date(ms(t.fin))) : "" });
   return [
     "Sos el agente de agenda de Manu (estudiante y emprendedor en Argentina, habla rioplatense). Tu ÚNICO trabajo es ENTENDER su mensaje y devolverlo estructurado en JSON. NO calcules horarios ni reordenes nada: eso lo hace el sistema con tus datos. Respondé SOLO JSON.",
@@ -486,6 +500,8 @@ function prompt(hoy, ahora, tareasHoy, totales, texto, hayAudio, fechaReal, prox
     "SOCIAL Y OTROS (sin habilidad, se miden igual): cafés, salidas, amigos, familia -> nombre 'Social: <detalle corto>' (ej. 'Social: café con mi primo'); compras o trámites -> 'Compras'; viajes -> 'Traslado a X'. NO uses 'Tiempo muerto' para lo social ni para compras: tiempo muerto es solo dar vueltas sin hacer nada. Nunca pongas compras como trabajo.",
     "HASTA QUÉ HORA: si dice hasta qué hora se queda ('me quedo hasta las 2'), poné dormir:'02:00' (sin fin_del_dia). Si da un total de estudio en módulos ('dos módulos, 2 horas y media'), poné un ítem por módulo con sus minutos (75 y 75). 'Otros módulos más' sin cantidad: agregá módulos de 50-75 min hasta la hora que dijo.",
     "SUEÑO: siempre registralo cuando lo cuente, es clave para medir. 'me acosté 22:40 y me levanté 5:45' -> hecho {nombre:'Sueño', habilidad:'Sueño', desde:'22:40', hasta:'05:45', fecha: el día en que se acostó (si se acostó después de medianoche, igual es el día anterior)}. 'me levanté a las 5:45' sin decir cuándo se acostó: preguntalo en respuesta.",
+    "ESTADÍSTICAS DE LOS ÚLTIMOS 7 DÍAS (minutos hechos por día y por habilidad o categoría; promedios sobre los días con registro): " + JSON.stringify(stats || {}),
+    "PREGUNTAS DE DATOS ('cuánto estudié esta semana', 'promedio por día', 'cuánto dormí', 'cuánto tiempo social'): respondé SIEMPRE con estos números, pasados a horas y minutos, aclarando cuántos días tienen registro. Nunca digas que no tenés los registros si están acá.",
     "MINUTOS HECHOS HOY POR HABILIDAD: " + JSON.stringify(totales),
     "PRÓXIMOS DÍAS (parciales, consultas, etc.): " + JSON.stringify((proximas || []).filter((t) => t.evento || /parcial|consulta|cursada|examen/i.test(t.nombre)).slice(0, 15).map((t) => ({ n: t.nombre, dia: (t.inicio || "").slice(0, 10), ini: t.inicio && t.inicio.length > 10 ? horaAR(new Date(ms(t.inicio))) : "" }))),
     "HABILIDADES: Estudios (facultad, módulos, consultas de materias, cursada), Trabajo (negocio, agencia, WhatsApp, historias, videos, clientes, ventas), Lectura, Espiritual (meditar), Finanzas (estudiar inversiones), Marca Personal, Ejercicio (gimnasio, bici, correr), Sueño (dormir, siesta). Comidas, traslados y tiempo muerto van SIN habilidad (\"\").",
@@ -611,8 +627,9 @@ async function procesar(env, msg) {
     const ahoraD = new Date(ahoraMs), hoy = fechaLogica(ahoraD), ahora = horaAR(ahoraD), fechaReal = fechaAR(ahoraD);
     const cx = await cargarDia(env, hoy);
     const proximas = await tareasDesde(env, sumarDias(hoy, 1), sumarDias(hoy, 10));
+    const stats = await estadisticas(env, hoy, 7);
     const ayerT = (await tareasDesde(env, sumarDias(hoy, -1), hoy)).filter((t) => t.inicio && diaDe(t) === sumarDias(hoy, -1) && !/sin registrar/i.test(t.nombre));
-    const mkPrompt = (tx, hayAudio) => prompt(hoy, ahora, vivas(cx).filter((t) => !/sin registrar/i.test(t.nombre) || true), totalesDe(cx.ts), tx, hayAudio, fechaReal, proximas, ayerT);
+    const mkPrompt = (tx, hayAudio) => prompt(hoy, ahora, vivas(cx).filter((t) => !/sin registrar/i.test(t.nombre) || true), totalesDe(cx.ts), tx, hayAudio, fechaReal, proximas, ayerT, stats);
     const partes = [{ text: mkPrompt(texto, !!audio) }];
     let audioB64 = "";
     if (audio) {
