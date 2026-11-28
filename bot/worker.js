@@ -215,11 +215,13 @@ async function procesarHecho(cx, items, ahora) {
   }
   const res = new Array(L.length);
   let cursor = ahora;
+  const lista = L.length > 1 && !L.some((x) => x.desde || x.hasta);
   for (let i = L.length - 1; i >= 0; i--) {
     const it = L[i];
     let e = it.hasta ? enHora(cx.dia, it.hasta) : cursor;
     if (!(e <= ahora + 5 * M) && !(it.desde && it.hasta)) e = Math.min(cursor, ahora);
     let s = it.desde ? enHora(cx.dia, it.desde) : NaN;
+    if (lista && isNaN(s) && !/tiempo muerto|vueltas|deambul/i.test(it.nombre)) { const d = it.min > 0 ? it.min : durDefecto(it.nombre, habDe(it.nombre, it.habilidad)); s = e - d * M; }
     if (isNaN(s) && it.min > 0 && !it.hasta) {
       /* si lo había arrancado (En progreso), cuenta desde ahí */
       const hab0 = habDe(it.nombre, it.habilidad);
@@ -275,7 +277,9 @@ function procesarCorregir(cx, items) {
     const hab = habDe(it.nombre, it.habilidad);
     const t = vivas(cx).filter((x) => x.hecho && conHora(x) && parecido(x, it.nombre, hab)).sort((a, b) => ms(b.fin) - ms(a.fin))[0];
     if (!t) { cx.log.push("❓ no encontré " + it.nombre + " para corregir"); continue; }
-    const e = ms(t.fin), s = e - it.min * M;
+    let e = ms(t.fin), s = e - it.min * M;
+    if (it.desde) { s = enHora(cx.dia, it.desde); e = s + it.min * M; }
+    else if (it.hasta) { e = enHora(cx.dia, it.hasta); s = e - it.min * M; }
     cambiar(cx, t, { inicio: aISO(s), fin: aISO(e), min: Math.round(it.min) }); t.usado = true; cx.anclados.add(t.id);
     /* lo que tapa ese tramo (pausas, sin registrar) se va */
     vivas(cx).forEach((o) => { if (o !== t && conHora(o) && o.hecho && /pausa|sin registrar|tiempo muerto/i.test(o.nombre) && ms(o.inicio) >= s && ms(o.fin) <= e) cambiar(cx, o, { archivar: true }); });
@@ -488,12 +492,13 @@ function prompt(hoy, ahora, tareasHoy, totales, texto, hayAudio, fechaReal, prox
     "NOMBRES: estudio = 'Estudio <Materia>' (ej. 'Estudio Informática'); trabajo genérico = 'Trabajo Diario', o el nombre concreto si lo dice ('Programar historias'); hábitos: 'Meditar', 'Lectura', 'Estudiar Inversiones', 'Marca Personal', 'Ejercicio'; comidas: 'Desayuno','Almuerzo','Merienda','Cena'; 'Traslado a X'; 'Tiempo muerto' para cuando dice que estuvo dando vueltas, deambulando o sin hacer nada; 'Siesta' (Sueño). Si se refiere a una tarea de la agenda, usá su mismo nombre.",
     "CAMPOS (todos opcionales):",
     "- hecho: lo que YA hizo (verbo en pasado: 'terminé', 'estuve', 'hice', 'recién termino'), en ORDEN CRONOLÓGICO, un ítem por actividad: {nombre, habilidad, min, desde, hasta, detalle}. min = minutos que dijo (1 hora y cuarto = 75). desde/hasta = horas 'HH:MM' SOLO si las dijo ('de 9 a 10:30' -> desde '09:00', hasta '10:30'; '(ahora)' o 'recién' en el último = no pongas hasta). Si dice 'terminé X' sin minutos ni horas, dejá min en null (el sistema usa desde cuándo arrancó). Si dice que en el medio estuvo dando vueltas sin decir cuánto, agregá {nombre:'Tiempo muerto'} en su lugar del orden, sin min. detalle = lo que dijo, literal y breve (ej. 'programé historias, contesté consultas, cálculos de ventas').",
+    "- Si enumera varias cosas que hizo hasta ahora sin horas ('hice así: módulo de 1h15, cené, módulo de 1h30, recién termino'), ponelas en hecho en ese orden con sus minutos y SIN desde/hasta: el sistema las encadena hacia atrás desde ahora, así quedan bien en la línea de tiempo.",
     "- ahora: lo que empieza ahora o en unos minutos: {nombre, habilidad, min, en}. en = minutos hasta que arranca ('en 5' -> 5, 'descanso 5 y vuelvo' -> 5, 'ya arranqué' -> 0). min = duración si la dijo ('de 1 hora y cuarto' -> 75), si no null.",
     "- despues: lo que dice que hace después, EN ORDEN: [{nombre, habilidad, min}]. 'estudiar informática full' -> [{nombre:'Estudio Informática', min:null}].",
     "- fijos: cosas con hora fija nuevas o cambiadas: [{nombre, habilidad, fecha (AAAA-MM-DD, por defecto hoy), desde 'HH:MM', hasta 'HH:MM' o min, nota}]. Ej. 'a las 15:20 salgo para la facu' -> {nombre:'Traslado a la facultad', desde:'15:20', min:40}; 'el lunes tengo parcial de física en el aula 14' -> {nombre:'Parcial Física', fecha:..., desde:'08:00', min:120, nota:'Aula 14'} (si no da la hora, preguntala en respuesta).",
     "- no_hace: nombres de tareas de la agenda de hoy que dice que NO va a hacer hoy (ej. 'no voy al gimnasio' -> ['Ejercicio']).",
     "- planificar: SOLO si pide armar/organizar/planificar un día (o 'reorganizame el día', 'acomodame todo'): {fecha, despertar 'HH:MM' (def. 08:00), dormir 'HH:MM' (def. 00:00), fijos:[...], bloques:[{nombre, habilidad, min}] EN EL ORDEN en que conviene hacerlos, sin, nota}. Pensalo como un planificador experto: priorizá la materia del parcial más cercano; bloques de estudio de 50-95 min intercalados con trabajo; si pide trabajo mínimo, poné solo lo esencial (WhatsApp/consultas 20-30, historias 20, programar videos 30) repartido cada 1-2 horas entre estudio; incluí ejercicio si va al gimnasio (60-75 min, como fijo si da hora); si va a la facultad, traslados de ~40 min (como fijos). NO pongas comidas ni hábitos salvo que dé horas: el sistema los agrega solo. sin = hábitos que dice que no hace ese día. Para 'hoy' planificá solo desde AHORA.",
-    "- corregir: si dice que algo YA registrado duró otra cosa ('el módulo era de 75, no de 50'): [{nombre, habilidad, min}] con los minutos correctos. NO lo pongas también en hecho.",
+    "- corregir: si dice que algo YA registrado duró otra cosa ('el módulo era de 75, no de 50'): [{nombre, habilidad, min, desde, hasta}] con los minutos correctos y, si la dice, la hora en que arrancó (desde) o terminó (hasta). NO lo pongas también en hecho.",
     "- Si dice que va a hacer algo que interrumpe lo que está 'En progreso' (ej. 'ahora voy a cenar'), poné eso en 'ahora' y, si lo que estaba en progreso lo terminó o lo cortó, ponelo en hecho sin min (el sistema mide desde que arrancó). 'Después sigo estudiando' -> despues: [{nombre:'Estudio <Materia de lo que venía estudiando>'}].",
     "- fin_del_dia: true si dice que después de lo que hace ahora se va a dormir, que corta por hoy o que no hace nada más ('hago esto y me voy a dormir', 'hasta acá por hoy'). dormir: 'HH:MM' si dice a qué hora se acuesta. El sistema saca lo pendiente y deja los hábitos no hechos para penalizar. Si cuenta que ya comió algo (merienda, cena) ponelo en hecho.",
     "- estado: correcciones explícitas que pide ('volvelo a pendientes', 'eso no lo terminé'): [{id, estado:'Pendientes'|'En progreso'|'Hecho'}] con ids de la agenda.",
